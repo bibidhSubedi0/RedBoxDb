@@ -8,10 +8,10 @@
 
 
 
-CoreEngine::SimpleVectorDB::SimpleVectorDB(int dim) : dimension(dim) {}
+CoreEngine::RedBoxVector::RedBoxVector(int dim) : dimension(dim) {}
 
-// INSERT (The "Add Data" Function)
-void CoreEngine::SimpleVectorDB::insert(uint64_t id, const std::vector<float>& vec) {
+// INSERT
+void CoreEngine::RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
     if (vec.size() != dimension) {
         std::cerr << "Error: Vector dimension mismatch!" << std::endl;
         return;
@@ -20,7 +20,7 @@ void CoreEngine::SimpleVectorDB::insert(uint64_t id, const std::vector<float>& v
 }
 
 // SEARCH (Brute Force)
-int CoreEngine::SimpleVectorDB::search(const std::vector<float>& query) {
+int CoreEngine::RedBoxVector::search(const std::vector<float>& query) {
         float min_dist = 1e9;
         int best_id = -1;
 

@@ -1,17 +1,33 @@
+# =========================
+# RedBoxDb core library
+# =========================
+add_library(RedBoxDbLib)
+
+target_sources(RedBoxDbLib
+    PRIVATE
+        engine.cpp
+)
+
+target_include_directories(RedBoxDbLib
+    PUBLIC
+        ${PROJECT_SOURCE_DIR}/include
+)
+
+set_project_warnings(RedBoxDbLib)
+
+# =========================
+# RedBoxDb executable
+# =========================
 add_executable(RedBoxDb)
 
 target_sources(RedBoxDb
     PRIVATE
         main.cpp
- "engine.cpp")
+)
 
-target_include_directories(RedBoxDb
+target_link_libraries(RedBoxDb
     PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
+        RedBoxDbLib
 )
 
 set_project_warnings(RedBoxDb)
-
-install(TARGETS RedBoxDb
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
