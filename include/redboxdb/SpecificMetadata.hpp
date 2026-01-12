@@ -6,7 +6,6 @@ namespace CoreEngine {
         uint64_t max_capacity;
         uint64_t dimensions;      // DYNAMIC!
         uint64_t data_type_size;  // 4 (float)
-        uint8_t _padding[96];
+        uint8_t _padding[96];    // Future proofing
     };
-    // No VectorPoint struct here! We build it manually.
 }
