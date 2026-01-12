@@ -5,7 +5,7 @@
 #include "redboxdb/engine.hpp" // Ensure this path is correct
 
 // Test Fixture to handle file cleanup automatically
-class RedBoxDbTest : public ::testing::Test {
+class BasicPersistanceAndZC : public ::testing::Test {
 protected:
     std::string test_db_file = "test_redbox.db";
     int dim = 3;
@@ -26,7 +26,7 @@ protected:
     }
 };
 
-TEST_F(RedBoxDbTest, InsertAndSearchInMemory) {
+TEST_F(BasicPersistanceAndZC, InsertAndSearchInMemory) {
     CoreEngine::RedBoxVector db(test_db_file, dim, capacity);
 
     // Target: [1.0, 0.0, 0.0] -> ID 1
@@ -42,7 +42,7 @@ TEST_F(RedBoxDbTest, InsertAndSearchInMemory) {
     EXPECT_EQ(result, 1) << "Should find ID 1 as the closest vector";
 }
 
-TEST_F(RedBoxDbTest, PersistenceCheck) {
+TEST_F(BasicPersistanceAndZC, PersistenceCheck) {
     // Scope 1: Write Data
     {
         CoreEngine::RedBoxVector db(test_db_file, dim, capacity);
@@ -59,7 +59,7 @@ TEST_F(RedBoxDbTest, PersistenceCheck) {
     }
 }
 
-TEST_F(RedBoxDbTest, LargeDatasetHandling) {
+TEST_F(BasicPersistanceAndZC, LargeDatasetHandling) {
     CoreEngine::RedBoxVector db(test_db_file, dim, 5000);
 
     // Insert 100 vectors
@@ -73,7 +73,7 @@ TEST_F(RedBoxDbTest, LargeDatasetHandling) {
     EXPECT_EQ(result, 42);
 }
 
-TEST_F(RedBoxDbTest, ZeroCopyCorrectness) {
+TEST_F(BasicPersistanceAndZC, ZeroCopyCorrectness) {
     // This verifies that your new "Raw Pointer" search didn't break anything
     CoreEngine::RedBoxVector db(test_db_file, dim, capacity);
 
@@ -155,4 +155,75 @@ TEST_F(DeletionTest, ReinsertionUndo) {
 
     // Verify back
     EXPECT_EQ(db.search({ 0.0f, 0.0f, 0.0f }), 1);
+}
+
+
+
+#include <filesystem>
+#include <algorithm>
+
+class SearchNTest : public ::testing::Test {
+protected:
+    std::string db_file = "test_search_n.db";
+    std::string del_file = "test_search_n.db.del";
+
+    void SetUp() override {
+        if (std::filesystem::exists(db_file)) std::filesystem::remove(db_file);
+        if (std::filesystem::exists(del_file)) std::filesystem::remove(del_file);
+    }
+};
+
+TEST_F(SearchNTest, CorrectOrder) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    // Insert points at increasing distances from Origin
+    db.insert(10, { 1.0f, 0.0f, 0.0f }); // Closest
+    db.insert(20, { 2.0f, 0.0f, 0.0f });
+    db.insert(30, { 3.0f, 0.0f, 0.0f }); // Furthest
+
+    auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 3);
+
+    ASSERT_EQ(results.size(), 3);
+    EXPECT_EQ(results[0], 10); // 1st
+    EXPECT_EQ(results[1], 20); // 2nd
+    EXPECT_EQ(results[2], 30); // 3rd
+}
+
+TEST_F(SearchNTest, RequestMoreThanExists) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    db.insert(1, { 1.0f, 1.0f, 1.0f });
+    db.insert(2, { 2.0f, 2.0f, 2.0f });
+
+    // Ask for 5 items, but DB only has 2
+    auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 5);
+
+    EXPECT_EQ(results.size(), 2);
+    // Should still be sorted
+    EXPECT_EQ(results[0], 1);
+    EXPECT_EQ(results[1], 2);
+}
+
+TEST_F(SearchNTest, IgnoreDeletedItems) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    db.insert(1, { 1.0f, 0.0f, 0.0f }); // Dist 1
+    db.insert(2, { 2.0f, 0.0f, 0.0f }); // Dist 4
+    db.insert(3, { 3.0f, 0.0f, 0.0f }); // Dist 9
+
+    // Delete the middle one
+    db.remove(2);
+
+    // Ask for Top 2
+    auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 2);
+
+    ASSERT_EQ(results.size(), 2);
+    EXPECT_EQ(results[0], 1);
+    EXPECT_EQ(results[1], 3); // Should skip 2 and grab 3
+}
+
+TEST_F(SearchNTest, EmptyDatabase) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+    auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 5);
+    EXPECT_TRUE(results.empty());
 }

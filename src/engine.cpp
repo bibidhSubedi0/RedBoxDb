@@ -5,6 +5,8 @@
 #include <vector>
 #include <cmath>
 #include <fstream>
+#include <queue>
+#include <algorithm>
 
 
 namespace CoreEngine{
@@ -116,6 +118,54 @@ namespace CoreEngine{
         append_tombstone(id);
 
         return true;
+    }
+
+    std::vector<int> RedBoxVector::search_N(const std::vector<float>& query, int N) {
+        // It automatically keeps the LARGEST distance at the top.
+        std::priority_queue<std::pair<float, int>> pq;
+
+        int count = static_cast<int>(_manager->get_count());
+
+        for (int i = 0; i < count; ++i) {
+
+            // --- ZERO COPY READ ---
+            auto record = _manager->get_vector_raw(i);
+            uint64_t id = record.first;
+
+            // --- DELETION CHECK ---
+            if (deleted_ids.count(id)) continue;
+
+            // --- DISTANCE CALCULATION ---
+            const float* vec_ptr = record.second;
+            float dist = 0.0f;
+
+            for (size_t d = 0; d < dimension; ++d) {
+                float diff = vec_ptr[d] - query[d];
+                dist += diff * diff;
+            }
+
+            // --- THE "TOP N" LOGIC ---
+            if (pq.size() < N) {
+                pq.push({ dist, static_cast<int>(id) });
+            }
+            else if (dist < pq.top().first) {
+                pq.pop();  // Kick out the worst one
+                pq.push({ dist, static_cast<int>(id) }); // Add the new one
+            }
+        }
+
+        // --- EXTRACT RESULTS ---
+        std::vector<int> result;
+        result.reserve(pq.size());
+
+        while (!pq.empty()) {
+            result.push_back(pq.top().second);
+            pq.pop();
+        }
+
+        std::reverse(result.begin(), result.end());
+
+        return result;
     }
 }
 
