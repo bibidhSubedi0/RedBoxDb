@@ -83,3 +83,76 @@ TEST_F(RedBoxDbTest, ZeroCopyCorrectness) {
     int result = db.search({ 1.1f, 1.1f, 1.1f });
     EXPECT_EQ(result, 200);
 }
+
+
+class DeletionTest : public ::testing::Test {
+protected:
+    std::string db_file = "test_delete.db";
+    std::string del_file = "test_delete.db.del";
+
+    void SetUp() override {
+        if (std::filesystem::exists(db_file)) std::filesystem::remove(db_file);
+        if (std::filesystem::exists(del_file)) std::filesystem::remove(del_file);
+    }
+
+    void TearDown() override {
+        // Optional cleanup
+    }
+};
+
+TEST_F(DeletionTest, BasicSoftDelete) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    // Insert Target (ID 10) and Distractor (ID 99)
+    db.insert(10, { 1.0f, 1.0f, 1.0f });
+    db.insert(99, { 50.0f, 50.0f, 50.0f });
+
+    // 1. Confirm ID 10 is found
+    EXPECT_EQ(db.search({ 1.1f, 1.1f, 1.1f }), 10);
+
+    // 2. Delete ID 10
+    bool removed = db.remove(10);
+    EXPECT_TRUE(removed);
+
+    // 3. Confirm ID 10 is GONE (Should find ID 99 now as it's the only one left)
+    EXPECT_EQ(db.search({ 1.1f, 1.1f, 1.1f }), 99);
+}
+
+TEST_F(DeletionTest, PersistenceOfDeletion) {
+    // Phase 1: Create and Delete
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 1000);
+        db.insert(5, { 0.0f, 0.0f, 0.0f });
+        db.remove(5);
+    }
+
+    // Phase 2: Reload and Verify
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 1000);
+        // We insert a far away vector just so the DB isn't empty
+        db.insert(999, { 100.0f, 100.0f, 100.0f });
+
+        // Search for 0,0,0. 
+        // If ID 5 was still there, it would be a perfect match.
+        // Since it's deleted, we should match 999 (distractor).
+        int result = db.search({ 0.0f, 0.0f, 0.0f });
+        EXPECT_EQ(result, 999);
+    }
+}
+
+TEST_F(DeletionTest, ReinsertionUndo) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    db.insert(1, { 0.0f, 0.0f, 0.0f });
+    db.remove(1);
+
+    // Verify gone
+    db.insert(2, { 10.0f, 10.0f, 10.0f });
+    EXPECT_EQ(db.search({ 0.0f, 0.0f, 0.0f }), 2);
+
+    // Re-insert ID 1
+    db.insert(1, { 0.0f, 0.0f, 0.0f });
+
+    // Verify back
+    EXPECT_EQ(db.search({ 0.0f, 0.0f, 0.0f }), 1);
+}

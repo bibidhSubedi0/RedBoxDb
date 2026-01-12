@@ -8,12 +8,18 @@
 
 
 namespace CoreEngine{
-    RedBoxVector::RedBoxVector(std::string file_name, size_t dim, int capacity) : file_name(file_name), dimension(dim)
+    RedBoxVector::RedBoxVector(std::string file_name, size_t dim, int capacity) : file_name(file_name),tombstone_file(file_name + ".del"), dimension(dim)
     {
         _manager = std::make_unique<StorageManager::Manager>(file_name,dim, capacity);
+        load_tombstones();
     }
 
     void RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
+        if (deleted_ids.count(id)) {
+            deleted_ids.erase(id);
+            // ideally we should remove it from the .del file too, 
+            // but for a simple append only log, we can ignore this for now.
+        }
         try {
             _manager->add_vector(id, vec);
         }
@@ -52,6 +58,16 @@ namespace CoreEngine{
             auto record = _manager->get_vector_raw(i);
 
             uint64_t id = record.first;
+
+            // --- DELETION CHECK ---
+            if (deleted_ids.count(id)) {
+                continue; // Skip this vector, it is dead.
+            }
+
+            // I HAVE ABSOUTELY NO CLUE, IF THIS IS THE RIGHT WAY TO DO THIS BUT FUCK IT WE BALL
+            // (I can already think of 10 problems this can cause *cry emoji)
+            // ----------------------
+
             const float* vec_ptr = record.second; // No std::vector
 
             // Euclidean Distance using raw pointers
@@ -68,6 +84,38 @@ namespace CoreEngine{
             }
         }
         return best_id;
+    }
+
+    void RedBoxVector::load_tombstones() {
+        std::ifstream f(tombstone_file, std::ios::binary);
+        if (!f.is_open()) return; 
+
+        uint64_t id;
+        while (f.read(reinterpret_cast<char*>(&id), sizeof(id))) {
+            deleted_ids.insert(id);
+        }
+        // std::cout << "[DB] Loaded " << deleted_ids.size() << " tombstones." << std::endl;
+    }
+
+    void RedBoxVector::append_tombstone(uint64_t id) {
+        // Append to disk immediately so it survives a crash
+        std::ofstream f(tombstone_file, std::ios::binary | std::ios::app);
+        if (f.is_open()) {
+            f.write(reinterpret_cast<const char*>(&id), sizeof(id));
+        }
+    }
+
+    bool RedBoxVector::remove(uint64_t id) {
+        // 1. If already deleted, do nothing
+        if (deleted_ids.count(id)) return false;
+
+        // 2. Add to memory (for immediate effect)
+        deleted_ids.insert(id);
+
+        // 3. Persist to disk
+        append_tombstone(id);
+
+        return true;
     }
 }
 
