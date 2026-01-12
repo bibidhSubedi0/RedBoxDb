@@ -1,14 +1,46 @@
 #pragma once
 
+#include <string>
+#include <vector>
+#include <stdexcept>
+#include <iostream>
+#include <windows.h>
+#include <redboxdb/SpecificMetadata.hpp>
+
 namespace StorageManager {
+
     class Manager {
     private:
-        int allocated_size;
+        size_t allocated_size;
+        std::string filename;
+        HANDLE hFile;
+        HANDLE hMapFile;
+        void* map_base;
+
+        CoreEngine::SpecificMetadata* header;
+
+        char* data_start;
+        size_t row_size_bytes;
 
     public:
-        Manager(int size);
+        Manager(const std::string& db_file, uint64_t dimensions, int initial_capacity);
+        ~Manager();
+
+        void add_vector(uint64_t id, const std::vector<float>& vec);
+        std::pair<uint64_t, std::vector<float>> get_vector(int index);
+        uint64_t get_count() const;
     };
 }
+
+
+
+/*
+    I am on windows! Forgive me.
+*/
+
+
+
+
 /*
     
     So every database file's size will ofc depened on the database
