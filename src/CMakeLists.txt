@@ -6,7 +6,7 @@ add_library(RedBoxDbLib)
 target_sources(RedBoxDbLib
     PRIVATE
         engine.cpp
-)
+ )
 
 target_include_directories(RedBoxDbLib
     PUBLIC
@@ -23,7 +23,7 @@ add_executable(RedBoxDb)
 target_sources(RedBoxDb
     PRIVATE
         main.cpp
-)
+ )
 
 target_link_libraries(RedBoxDb
     PRIVATE

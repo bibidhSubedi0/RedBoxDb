@@ -1,6 +1,6 @@
 #include <iostream>
 #include "redboxdb/engine.hpp"
-
+#include "redboxdb/storage_manager.hpp"
 
 #include <vector>
 #include <cmath>
@@ -8,7 +8,13 @@
 
 
 
-CoreEngine::RedBoxVector::RedBoxVector(int dim) : dimension(dim) {}
+CoreEngine::RedBoxVector::RedBoxVector(size_t dim, int size) : dimension(dim) {
+    _manager =  std::make_unique<StorageManager::Manager>(size);
+    _metadata.allocated_size = size;
+    _metadata.allocated_size = dim;
+    _metadata.data_structure_size = sizeof(float);
+}
+
 
 // INSERT
 void CoreEngine::RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
@@ -17,6 +23,21 @@ void CoreEngine::RedBoxVector::insert(uint64_t id, const std::vector<float>& vec
         return;
     }
     storage.push_back({ id, vec });
+
+    // Insertion happens through _manager
+}
+
+// DELETE
+void CoreEngine::RedBoxVector::remove(uint64_t id)
+{
+    for (auto i = 0;i < storage.size();i++) {
+        if (id == storage[i].id)
+        {
+            storage.erase(storage.begin() + i);
+            return;
+        }
+    }
+    std::cerr << "Error: ID not found!" << std::endl;
 }
 
 // SEARCH (Brute Force)
@@ -39,3 +60,9 @@ int CoreEngine::RedBoxVector::search(const std::vector<float>& query) {
         }
         return best_id;
     }
+
+
+//StorageManager::Manager::Manager(int size=default_size)
+StorageManager::Manager::Manager(int size) {
+    allocated_size = size;
+}
