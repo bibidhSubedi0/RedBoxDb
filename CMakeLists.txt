@@ -14,5 +14,21 @@ endif()
 include(cmake/StandardProjectSettings.cmake)
 
 add_subdirectory(src)
+add_subdirectory(tests)
 
 include(GNUInstallDirs)
+
+include(FetchContent)
+
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+)
+
+
+# Prevent gtest from overriding your compiler flags
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest)
+
+

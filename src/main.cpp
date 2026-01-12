@@ -1,98 +1,54 @@
 #include <iostream>
 #include <vector>
-#include <random>
-#include <chrono>
 #include <filesystem>
-#include <iomanip> // For std::fixed
-#include "redboxdb/engine.hpp"
+#include "redboxdb/engine.hpp" 
 
-// --- CONFIGURATION ---
-const int NUM_VECTORS = 100'000;    // 100k Vectors
-const int DIMENSIONS = 128;        // Realistic AI Dimension
-const std::string DB_FILE = "benchmark.db";
+const std::string DB_FILE = "sanity_search_n.db";
+const int DIM = 3;
 
-// Helper: Generate a random vector
-std::vector<float> generate_random_vector(size_t dim, std::mt19937& gen, std::uniform_real_distribution<float>& dis) {
-    std::vector<float> vec(dim);
-    for (size_t i = 0; i < dim; ++i) {
-        vec[i] = dis(gen);
-    }
-    return vec;
+void print_vec(const std::vector<int>& ids) {
+    std::cout << "[ ";
+    for (int id : ids) std::cout << id << " ";
+    std::cout << "]" << std::endl;
 }
 
 int main() {
-    // 1. SETUP
-    std::cout << "========================================" << std::endl;
-    std::cout << "   RedBoxDb BENCHMARK SUITE v1.0" << std::endl;
-    std::cout << "========================================" << std::endl;
-    std::cout << "Vectors:    " << NUM_VECTORS << std::endl;
-    std::cout << "Dimensions: " << DIMENSIONS << std::endl;
-    std::cout << "Target DB:  " << DB_FILE << std::endl;
-    std::cout << "----------------------------------------" << std::endl;
+    // Cleanup
+    if (std::filesystem::exists(DB_FILE)) std::filesystem::remove(DB_FILE);
+    if (std::filesystem::exists(DB_FILE + ".del")) std::filesystem::remove(DB_FILE + ".del");
 
-    // Clean previous run
-    if (std::filesystem::exists(DB_FILE)) {
-        std::filesystem::remove(DB_FILE);
-    }
+    std::cout << "--- SEARCH_N SANITY CHECK ---" << std::endl;
 
-    // RNG Setup
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> dis(0.0f, 1.0f);
+    CoreEngine::RedBoxVector db(DB_FILE, DIM, 100);
 
-    // --- BENCHMARK: INSERTION ---
-    {
-        std::cout << "[TEST] Starting Insertion..." << std::endl;
+    // Scenario: Query will be at [0,0,0]
+    // 1. Gold Medal   (Dist=1)
+    db.insert(1, { 1.0f, 0.0f, 0.0f });
+    // 2. Silver Medal (Dist=4)
+    db.insert(2, { 2.0f, 0.0f, 0.0f });
+    // 3. Bronze Medal (Dist=9)
+    db.insert(3, { 3.0f, 0.0f, 0.0f });
+    // 4. Loser        (Dist=10000)
+    db.insert(99, { 100.0f, 0.0f, 0.0f });
 
-        // Initialize DB with correct capacity
-        CoreEngine::RedBoxVector db(DB_FILE, DIMENSIONS, NUM_VECTORS);
+    // TEST 1: Get Top 3
+    std::cout << "Querying Top 3 (Expect: 1 2 3)..." << std::endl;
+    auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 3);
+    print_vec(results);
 
-        auto start_time = std::chrono::high_resolution_clock::now();
+    // TEST 2: Get Top 1 (Should just be ID 1)
+    std::cout << "Querying Top 1 (Expect: 1)..." << std::endl;
+    results = db.search_N({ 0.0f, 0.0f, 0.0f }, 1);
+    print_vec(results);
 
-        for (int i = 0; i < NUM_VECTORS; ++i) {
-            std::vector<float> vec = generate_random_vector(DIMENSIONS, gen, dis);
-            db.insert(i, vec);
+    // TEST 3: Soft Deletion Interaction
+    std::cout << "Deleting ID 2 (Silver Medal)..." << std::endl;
+    db.remove(2);
 
-            if (i % 10000 == 0 && i > 0) std::cout << "." << std::flush; // Progress dots
-        }
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> diff = end_time - start_time;
-
-        std::cout << "\n-> Inserted " << NUM_VECTORS << " vectors in "
-            << std::fixed << std::setprecision(2) << diff.count() << "s" << std::endl;
-        std::cout << "-> Speed: " << (NUM_VECTORS / diff.count()) << " vectors/sec" << std::endl;
-    }
-
-    // --- BENCHMARK: SEARCH (Disk I/O + Compute) ---
-    {
-        std::cout << "----------------------------------------" << std::endl;
-        std::cout << "[TEST] Starting Search (Flat Scan)..." << std::endl;
-
-        // Re-open DB (Simulate cold start)
-        CoreEngine::RedBoxVector db(DB_FILE, DIMENSIONS, NUM_VECTORS);
-
-        // Create a random query vector
-        std::vector<float> query = generate_random_vector(DIMENSIONS, gen, dis);
-
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        // Perform Search
-        int [[maybe_unused]] result_id = db.search(query);
-        (void)result_id;
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> diff = end_time - start_time;
-
-        std::cout << "-> Search completed in " << diff.count() << " ms" << std::endl;
-        std::cout << "-> Scanned " << (NUM_VECTORS * DIMENSIONS * sizeof(float)) / (1024.0 * 1024.0)
-            << " MB of data." << std::endl;
-
-        // Latency Classification
-        if (diff.count() < 10.0) std::cout << "-> Rating: EXTREMELY FAST (<10ms)" << std::endl;
-        else if (diff.count() < 100.0) std::cout << "-> Rating: FAST (<100ms)" << std::endl;
-        else std::cout << "-> Rating: SLOW (>100ms - Consider Indexing)" << std::endl;
-    }
+    std::cout << "Querying Top 3 again (Expect: 1 3 99)..." << std::endl;
+    // Since 2 is gone, 99 should get promoted to 3rd place
+    results = db.search_N({ 0.0f, 0.0f, 0.0f }, 3);
+    print_vec(results);
 
     return 0;
 }
