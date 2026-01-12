@@ -12,7 +12,7 @@ CoreEngine::RedBoxVector::RedBoxVector(size_t dim, int size) : dimension(dim) {
     _manager =  std::make_unique<StorageManager::Manager>(size);
     _metadata.allocated_size = size;
     _metadata.allocated_size = dim;
-    _metadata.data_structure_size = sizeof(float);
+    _metadata.data_type_size = sizeof(float);
 }
 
 
