@@ -46,12 +46,8 @@ int main() {
         // Constructor automatically re-maps the existing file
         CoreEngine::RedBoxVector db(DB_FILE, DIM);
 
-        // Optional: Check status (since loadFromDisk is now just a status printer)
-        db.loadFromDisk(DB_FILE);
-
         std::cout << "-> Searching for vector close to { 0.95, 0.1, 0.1 }..." << std::endl;
 
-        // NOTE: Ensure your search function uses _manager->get_vector(i)!
         int result = db.search({ 0.95f, 0.1f, 0.1f });
 
         print_result(result);
