@@ -38,24 +38,27 @@ namespace CoreEngine{
         std::cout << "-> Current Record Count: " << _manager->get_count() << std::endl;
     }
 
-    int RedBoxVector::search(const std::vector<float>& query) {
+    int CoreEngine::RedBoxVector::search(const std::vector<float>& query) {
         float min_dist = 1e9;
         int best_id = -1;
 
-        // Iterate through all records in the Manager
-        uint64_t count = _manager->get_count();
+        // Cache the loop count to avoid calling function every iteration
+        int count = static_cast<int>(_manager->get_count());
 
-        for (uint64_t i = 0; i < count; ++i) {
-            // Fetch data from Memory Map
-            std::pair<uint64_t, std::vector<float>> record = _manager->get_vector(static_cast<int>(i));
+        for (int i = 0; i < count; ++i) {
+
+            // --- ZERO COPY READ ---
+            // get a pointer directly to the Memory Map
+            auto record = _manager->get_vector_raw(i);
 
             uint64_t id = record.first;
-            const std::vector<float>& vec = record.second;
+            const float* vec_ptr = record.second; // No std::vector
 
-            // Euclidean Distance
+            // Euclidean Distance using raw pointers
             float dist = 0.0f;
             for (size_t d = 0; d < dimension; ++d) {
-                float diff = vec[d] - query[d];
+                // Access memory directly
+                float diff = vec_ptr[d] - query[d];
                 dist += diff * diff;
             }
 
@@ -162,23 +165,22 @@ namespace StorageManager {
         header->vector_count++;
     }
 
-    std::pair<uint64_t, std::vector<float>> Manager::get_vector(int index) {
+    std::pair<uint64_t, const float*> StorageManager::Manager::get_vector_raw(int index) {
+        // Safety check (optional for raw speed, but good for stability)
         if (index >= header->vector_count) throw std::out_of_range("Index out of bounds");
 
-        // 1. Find the row
+        // 1. Calculate the exact memory address of this row
         size_t offset = index * row_size_bytes;
         char* row_ptr = data_start + offset;
 
-        // 2. Read ID
+        // 2. Read ID (Direct cast)
         uint64_t id = *(uint64_t*)row_ptr;
 
-        // 3. Read Floats
-        float* vec_ptr = (float*)(row_ptr + sizeof(uint64_t));
+        // 3. Get Pointer to Floats (Jump past the 8-byte ID)
+        const float* vec_ptr = (const float*)(row_ptr + sizeof(uint64_t));
 
-        std::vector<float> vec(header->dimensions);
-        std::memcpy(vec.data(), vec_ptr, header->dimensions * sizeof(float));
-
-        return { id, vec };
+        // Return the ID and the address of the data (No Copy!)
+        return { id, vec_ptr };
     }
 
     uint64_t Manager::get_count() const { return header->vector_count; }

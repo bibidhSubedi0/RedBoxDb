@@ -27,7 +27,7 @@ namespace StorageManager {
         ~Manager();
 
         void add_vector(uint64_t id, const std::vector<float>& vec);
-        std::pair<uint64_t, std::vector<float>> get_vector(int index);
+        std::pair<uint64_t, const float*> get_vector_raw(int index);
         uint64_t get_count() const;
     };
 }
