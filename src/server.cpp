@@ -16,6 +16,7 @@ const uint8_t CMD_INSERT = 1;
 const uint8_t CMD_SEARCH = 2;
 const uint8_t CMD_DELETE = 3;
 const uint8_t CMD_SELECT_DB = 4;
+const uint8_t CMD_UPDATE = 5;
 
 // alias for the Catalog
 using DbCatalog = std::unordered_map<std::string, std::unique_ptr<CoreEngine::RedBoxVector>>;
@@ -106,6 +107,30 @@ void handle_client(SOCKET client_socket, DbCatalog& catalog) {
         else if (cmd == CMD_DELETE) {
             bool success = active_db->remove(meta_data);
             char resp = success ? '1' : '0';
+            send(client_socket, &resp, 1, 0);
+        }
+        else if (cmd == CMD_UPDATE) {
+            // Logic is identical to INSERT, but calls db->update()
+            // 1. Determine size
+            // already done mathi
+
+            std::vector<float> vec(current_dim);
+            int total = 0;
+
+            // 2. Read Vector Payload
+            while (total < vec_byte_size) {
+                int n = recv(client_socket, (char*)vec.data() + total, vec_byte_size - total, 0);
+                if (n <= 0) return;
+                total += n;
+            }
+
+            // 3. Perform Update
+            bool success = active_db->update(meta_data, vec);
+            
+            // 4. Send Response
+            // '1' = Success (Updated)
+            // '0' = Failure (ID not found or Deleted)
+            char resp = success ? '1' : '0'; 
             send(client_socket, &resp, 1, 0);
         }
     }

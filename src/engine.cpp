@@ -171,6 +171,33 @@ namespace CoreEngine{
     uint32_t RedBoxVector::get_dim() const {
         return static_cast<uint32_t>(dimension);
     }
+
+    bool RedBoxVector::update(uint64_t id, const std::vector<float>& vec) {
+        if (deleted_ids.count(id)) {
+            return false; // if it is deleted, ofc it cant be updated
+        }
+
+        int count = static_cast<int>(_manager->get_count());
+
+        // 2. Linear Scan to find the ID
+        for (int i = 0; i < count; ++i) {
+            auto record = _manager->get_vector_raw(i);
+
+            if (record.first == id) {
+                // record.second is a float* pointer to the actual file memory.
+
+                // Safety: Ensure we don't write past bounds (dimension is fixed)
+                float* dst = const_cast<float*>(record.second);
+                const float* src = vec.data();
+
+                // Direct Memory Copy to Disk Map
+                std::memcpy(dst, src, dimension * sizeof(float));
+
+                return true; // "Updated existing"
+            }
+        }
+        return false;
+    }
 }
 
 namespace StorageManager {

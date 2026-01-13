@@ -26,6 +26,7 @@ namespace CoreEngine {
         std::vector<int> search_N(const std::vector<float>& query, int N);
         bool remove(uint64_t id);
         uint32_t get_dim() const;
+        bool update(uint64_t id, const std::vector<float>& vec);
 
 
         // Soft deletion mechanism
