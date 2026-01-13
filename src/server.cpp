@@ -57,14 +57,17 @@ void handle_client(SOCKET client_socket, DbCatalog& catalog) {
             std::cout << "[SERVER] Req DB: " << db_name << " (Dim: " << requested_dim << ")" << std::endl;
 
             // 3. Load or Create
-            if (catalog.find(db_name) == catalog.end()) {
+            if (catalog.find(db_name) == catalog.end()) { // if not found create new
                 std::cout << "   -> New/Loading..." << std::endl;
                 std::string filename = db_name + ".db";
                 // Use the CLIENT PROVIDED dimension!
-                catalog[db_name] = std::make_unique<CoreEngine::RedBoxVector>(filename, requested_dim, 100000);
+                // also, for now we are just using a hard limit of 100k
+                int static_capacity = 100000;
+
+                catalog[db_name] = std::make_unique<CoreEngine::RedBoxVector>(filename, requested_dim, static_capacity);
             }
 
-            active_db = catalog[db_name].get();
+            active_db = catalog[db_name].get(); // if found use tei
 
             // Safety Check: Did client ask for 128 dim but open a 1024 dim file?
             if (active_db->get_dim() != requested_dim) {
