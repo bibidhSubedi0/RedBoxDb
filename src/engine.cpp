@@ -167,6 +167,10 @@ namespace CoreEngine{
 
         return result;
     }
+
+    uint32_t RedBoxVector::get_dim() const {
+        return static_cast<uint32_t>(dimension);
+    }
 }
 
 namespace StorageManager {
