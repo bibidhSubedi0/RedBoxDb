@@ -361,3 +361,15 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+
+# Ignore build artifacts
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+
+# Optional: Ignore the virtual environment if you have one
+venv/
+.env
