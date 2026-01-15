@@ -1,8 +1,7 @@
 import time
-import numpy as np
-import os
+import uuid
 import random
-import string
+import sys
 from client import RedBoxClient
 
 # ==========================================
@@ -18,18 +17,18 @@ class TestSuite:
 
     def assert_true(self, condition, test_name):
         if condition:
-            print(f"   ✅ PASS: {test_name}")
+            print(f"   [PASS] {test_name}")
             self.passed += 1
         else:
-            print(f"   ❌ FAIL: {test_name}")
+            print(f"   [FAIL] {test_name}")
             self.failed += 1
     
     def assert_equal(self, actual, expected, test_name):
         if actual == expected:
-            print(f"   ✅ PASS: {test_name} (Got {actual})")
+            print(f"   [PASS] {test_name} (Got {actual})")
             self.passed += 1
         else:
-            print(f"   ❌ FAIL: {test_name} (Expected {expected}, Got {actual})")
+            print(f"   [FAIL] {test_name} (Expected {expected}, Got {actual})")
             self.failed += 1
 
     def generate_id(self):
@@ -43,7 +42,7 @@ class TestSuite:
 # ==========================================
 # ACTUAL TESTS
 # ==========================================
-def run_validation():  # <--- FIXED NAME HERE
+def run_validation():
     tester = TestSuite()
     print("==========================================")
     print("   RedBoxDb COMPREHENSIVE VERIFICATION    ")
@@ -55,7 +54,6 @@ def run_validation():  # <--- FIXED NAME HERE
     tester.log(f"Connecting to DB: {db_name} (Dim=3)")
     
     with RedBoxClient(db_name=db_name, dim=3) as client:
-        # Vectors: X axis, Y axis, Z axis
         vec_x = [1.0, 0.0, 0.0] # ID 10
         vec_y = [0.0, 1.0, 0.0] # ID 20
         vec_z = [0.0, 0.0, 1.0] # ID 30
@@ -73,9 +71,11 @@ def run_validation():  # <--- FIXED NAME HERE
         res = client.search([0.1, 0.9, 0.0])
         tester.assert_equal(res, 20, "Search proximity to Y-Axis")
 
-    # --- TEST 2: FULL CRUD LIFECYCLE ---
+    # --- TEST 2: CRUD LIFECYCLE ---
     print("\n[TEST 2] CRUD Lifecycle (Create-Read-Update-Delete)")
-    db_name = "verify_crud"
+    
+    # Use UUID to prevent zombie data failures
+    db_name = f"verify_crud_{uuid.uuid4().hex[:8]}"
     target_id = tester.generate_id()
     
     with RedBoxClient(db_name=db_name, dim=4) as client:
@@ -134,7 +134,7 @@ def run_validation():  # <--- FIXED NAME HERE
     with RedBoxClient(db_name=db_name, dim=3) as client:
         client.insert(persist_id, persist_vec)
     
-    time.sleep(0.2) 
+    time.sleep(0.5) 
 
     # Phase 2: Reconnect
     tester.log("Phase 2: Opening new connection to same DB...")
@@ -143,11 +143,15 @@ def run_validation():  # <--- FIXED NAME HERE
         tester.assert_equal(res, persist_id, "Data survived reconnection")
 
     tester.summary()
+    
+    if tester.failed > 0:
+        sys.exit(1) # Ensure CI knows it failed
 
 if __name__ == "__main__":
     try:
         run_validation()
     except Exception as e:
-        print(f"\n❌ CRITICAL ERROR: {e}")
+        print(f"\n[CRITICAL ERROR] {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
