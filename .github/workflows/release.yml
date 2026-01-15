@@ -3,6 +3,9 @@ name: Release Builder
 on:
   release:
     types: [published]
+    
+permissions:
+  contents: write
 
 jobs:
   build-release:
@@ -15,7 +18,7 @@ jobs:
         cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
         cmake --build build --config Release
         
-    - name: Package Zip
+    - name: Create Zip Package
       shell: powershell
       run: |
         mkdir release_package
@@ -23,7 +26,9 @@ jobs:
         copy Client/client.py release_package/redbox.py
         Compress-Archive -Path release_package/* -DestinationPath RedBoxDb_Win64.zip
         
-    - name: Upload Artifact
+    - name: Upload to GitHub Release
       uses: softprops/action-gh-release@v1
       with:
         files: RedBoxDb_Win64.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
