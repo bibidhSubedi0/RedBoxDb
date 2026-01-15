@@ -40,7 +40,11 @@ add_executable(RedBoxServer server.cpp)
 target_link_libraries(RedBoxServer
     PRIVATE
         RedBoxDbLib
-        ws2_32  # <--- Essential for Windows Networking
 )
+
+# Only link Winsock on Windows
+if(WIN32)
+    target_link_libraries(RedBoxServer PRIVATE ws2_32)
+endif()
 
 set_project_warnings(RedBoxServer)

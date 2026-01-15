@@ -10,3 +10,8 @@ target_link_libraries(RedBoxDbTests
 )
 
 set_project_warnings(RedBoxDbTests)
+
+
+# Register tests with CTest (Standard CMake testing tool)
+include(GoogleTest)
+gtest_discover_tests(RedBoxDbTests)
