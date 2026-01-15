@@ -1,0 +1,70 @@
+﻿name: RedBoxDb CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build-and-verify:
+    runs-on: windows-latest
+
+    steps:
+    # 1. Checkout Code
+    - uses: actions/checkout@v3
+
+    # 2. Setup Python (for Client verification scripts)
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install Python Dependencies
+      run: pip install numpy
+
+    # 3. Configure CMake
+    - name: Configure CMake
+      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+    # 4. Build the Server & Tests
+    - name: Build Project
+      run: cmake --build build --config Release
+
+    # 5. Run C++ Unit Tests (GTest)
+    # This runs the "RedBoxTests.exe" created in step 2
+    - name: Run C++ Unit Tests
+      run: |
+        cd build/tests/Release
+        if (Test-Path RedBoxTests.exe) { .\RedBoxTests.exe }
+
+    # 6. Run Python Integration Tests (The Real Test)
+    # This starts your server, waits, and runs the python validation script
+    - name: Run System Verification
+      shell: powershell
+      run: |
+        echo "Starting RedBoxServer..."
+        # Note the path: build/src/Release/RedBoxServer.exe
+        $server = Start-Process -FilePath ".\build\src\Release\RedBoxServer.exe" -PassThru
+        
+        echo "Waiting 3 seconds for startup..."
+        Start-Sleep -Seconds 3
+
+        echo "Running Python Validation..."
+        # Add 'Client' folder to PYTHONPATH so scripts can find 'client.py'
+        $env:PYTHONPATH = "$PWD/Client"
+        
+        # Run the validation script
+        python Client/validation.py
+        
+        # Capture Success/Fail
+        $testResult = $LASTEXITCODE
+        
+        echo "Stopping Server..."
+        Stop-Process -Id $server.Id -Force
+        
+        if ($testResult -ne 0) { 
+            echo "❌ Verification Failed!"
+            exit $testResult 
+        }
+        echo "✅ Verification Passed!"

@@ -1,0 +1,29 @@
+name: Release Builder
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Build Server
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake --build build --config Release
+        
+    - name: Package Zip
+      shell: powershell
+      run: |
+        mkdir release_package
+        copy build/src/Release/RedBoxServer.exe release_package/
+        copy Client/client.py release_package/redbox.py
+        Compress-Archive -Path release_package/* -DestinationPath RedBoxDb_Win64.zip
+        
+    - name: Upload Artifact
+      uses: softprops/action-gh-release@v1
+      with:
+        files: RedBoxDb_Win64.zip
