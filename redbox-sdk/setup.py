@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="redboxdb",                # The name on PyPI (pip install redboxdb)
-    version="1.0.1",
+    version="1.0.3",
     description="Python client for the RedBox Vector Database",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
