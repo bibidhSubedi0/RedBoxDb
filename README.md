@@ -13,7 +13,7 @@ RedBoxDb operates on a client-server architecture where the Python library manag
 
 Benchmarks run on a standard Windows workstation (50,000 vectors, Dim: 64):
 
-* **Ingestion Throughput:** ~26,000 vectors/sec
+* **Ingestion Throughput:** ~600,000 vectors/sec and ~26,000 vectors/sec with the server
 * **Search Latency:** ~4ms (p50)
 * **Protocol:** Raw TCP (No HTTP/JSON overhead)
 * **Storage:** Append-only log persistence
