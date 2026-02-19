@@ -22,7 +22,7 @@ add_executable(RedBoxDb)
 
 target_sources(RedBoxDb
     PRIVATE
-        main.cpp
+        "main.cpp"
  )
 
 target_link_libraries(RedBoxDb

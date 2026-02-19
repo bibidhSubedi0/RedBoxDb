@@ -1,9 +1,13 @@
 name: Release Builder
 
 on:
-  release:
-    types: [published]
-    
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to attach to this release (e.g. v1.0.4)'
+        required: true
+        type: string
+
 permissions:
   contents: write
 
@@ -12,12 +16,12 @@ jobs:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Build Server
       run: |
         cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
         cmake --build build --config Release
-        
+
     - name: Create Zip Package
       shell: powershell
       run: |
@@ -25,10 +29,11 @@ jobs:
         copy build/src/Release/RedBoxServer.exe release_package/
         copy Client/client.py release_package/redbox.py
         Compress-Archive -Path release_package/* -DestinationPath RedBoxDb_Win64.zip
-        
+
     - name: Upload to GitHub Release
       uses: softprops/action-gh-release@v1
       with:
+        tag_name: ${{ inputs.version }}
         files: RedBoxDb_Win64.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

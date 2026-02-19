@@ -1,0 +1,3 @@
+add_executable(RedBoxBenchmark benchmark.cpp)
+target_link_libraries(RedBoxBenchmark PRIVATE RedBoxDbLib)
+set_project_warnings(RedBoxBenchmark)
