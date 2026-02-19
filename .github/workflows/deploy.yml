@@ -1,14 +1,18 @@
 name: Ship to PyPI & GitHub
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to deploy (e.g. v1.0.4)'
+        required: true
+        type: string
 
 jobs:
   deploy:
     runs-on: windows-latest
     permissions:
-      contents: write  # Needed to upload assets to GitHub Release
+      contents: write
 
     steps:
     # 1. Checkout Code
@@ -33,17 +37,11 @@ jobs:
         cmake --build build --config Release
 
     # 5. Move EXE to SDK Folder
-    #    This ensures the wheel includes the binary
     - name: Package EXE into SDK
       shell: powershell
       run: |
-        # Ensure destination exists
         if (-not (Test-Path "redbox-sdk/redboxdb")) { mkdir "redbox-sdk/redboxdb" }
-        
-        # Copy the compiled EXE
         copy "build/src/Release/RedBoxServer.exe" "redbox-sdk/redboxdb/"
-        
-        # Verify it's there
         if (-not (Test-Path "redbox-sdk/redboxdb/RedBoxServer.exe")) { 
             Write-Error "EXE copy failed!" 
             exit 1
@@ -54,14 +52,12 @@ jobs:
       working-directory: ./redbox-sdk
       run: python -m build
 
-    # 7. Rename Wheel to Windows Platform
-    #    (Because we built it on Windows with an .exe inside)
+    # 7. Fix Wheel Tag for Windows platform
     - name: Fix Wheel Tag
       working-directory: ./redbox-sdk/dist
       shell: powershell
       run: |
         $oldName = Get-ChildItem *.whl | Select-Object -ExpandProperty Name
-        # Rename 'none-any' to 'none-win_amd64'
         $newName = $oldName -replace "none-any", "none-win_amd64"
         Rename-Item $oldName $newName
         echo "WHEEL_PATH=redbox-sdk/dist/$newName" >> $env:GITHUB_ENV
@@ -78,6 +74,7 @@ jobs:
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
       with:
+        tag_name: ${{ inputs.version }}
         files: |
           ${{ env.WHEEL_PATH }}
           build/src/Release/RedBoxServer.exe

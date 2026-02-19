@@ -15,6 +15,7 @@ include(cmake/StandardProjectSettings.cmake)
 
 add_subdirectory(src)
 add_subdirectory(tests)
+add_subdirectory(benchmark)
 
 include(GNUInstallDirs)
 
