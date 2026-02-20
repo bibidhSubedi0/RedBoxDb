@@ -2,6 +2,7 @@
 #include <unordered_set>
 #include "VectorPoint.hpp"
 #include "redboxdb/storage_manager.hpp"
+#include <unordered_map>
 
 namespace CoreEngine {
 
@@ -17,6 +18,9 @@ namespace CoreEngine {
         // For soft deletion
         std::string tombstone_file;
         std::unordered_set<uint64_t> deleted_ids;
+
+        std::unordered_map<uint64_t, size_t> id_to_index;
+
 
 
         bool use_avx2;

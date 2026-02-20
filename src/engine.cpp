@@ -16,6 +16,15 @@ namespace CoreEngine{
     {
         _manager = std::make_unique<StorageManager::Manager>(file_name,dim, capacity);
         load_tombstones();
+        
+        // Build ID index from existing file contents
+        int existing = static_cast<int>(_manager->get_count());
+        for (int i = 0; i < existing; ++i) {
+            auto [id, _] = _manager->get_vector_raw(i);
+            if (!deleted_ids.count(id))
+                id_to_index[id] = i;
+        }
+
         use_avx2 = Platform::has_avx2();
         std::cout << "[DB] AVX2: " << (use_avx2 ? "enabled" : "disabled") << std::endl;
     }
@@ -27,7 +36,9 @@ namespace CoreEngine{
             // but for a simple append only log, we can ignore this for now.
         }
         try {
+            size_t new_index = _manager->get_count();
             _manager->add_vector(id, vec);
+            id_to_index[id] = new_index;
         }
         catch (const std::exception& e) {
             std::cerr << "Insert Error: " << e.what() << std::endl;
@@ -117,6 +128,7 @@ namespace CoreEngine{
 
         // 2. Add to memory (for immediate effect)
         deleted_ids.insert(id);
+        id_to_index.erase(id);
 
         // 3. Persist to disk
         append_tombstone(id);
@@ -172,30 +184,15 @@ namespace CoreEngine{
     }
 
     bool RedBoxVector::update(uint64_t id, const std::vector<float>& vec) {
-        if (deleted_ids.count(id)) {
-            return false; // if it is deleted, ofc it cant be updated
-        }
+        if (deleted_ids.count(id)) return false;
 
-        int count = static_cast<int>(_manager->get_count());
+        auto it = id_to_index.find(id);
+        if (it == id_to_index.end()) return false;
 
-        // 2. Linear Scan to find the ID
-        for (int i = 0; i < count; ++i) {
-            auto record = _manager->get_vector_raw(i);
-
-            if (record.first == id) {
-                // record.second is a float* pointer to the actual file memory.
-
-                // Safety: Ensure we don't write past bounds (dimension is fixed)
-                float* dst = const_cast<float*>(record.second);
-                const float* src = vec.data();
-
-                // Direct Memory Copy to Disk Map
-                std::memcpy(dst, src, dimension * sizeof(float));
-
-                return true; // "Updated existing"
-            }
-        }
-        return false;
+        auto record = _manager->get_vector_raw(static_cast<int>(it->second));
+        float* dst = const_cast<float*>(record.second);
+        std::memcpy(dst, vec.data(), dimension * sizeof(float));
+        return true;
     }
 }
 
