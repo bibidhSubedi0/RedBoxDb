@@ -13,6 +13,12 @@ target_include_directories(RedBoxDbLib
         ${PROJECT_SOURCE_DIR}/include
 )
 
+if(MSVC)
+    target_compile_options(RedBoxDbLib PRIVATE /arch:AVX2)
+else()
+    target_compile_options(RedBoxDbLib PRIVATE -mavx2 -mfma)
+endif()
+
 set_project_warnings(RedBoxDbLib)
 
 # =========================
