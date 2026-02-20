@@ -373,3 +373,4 @@ __pycache__/
 # Optional: Ignore the virtual environment if you have one
 venv/
 .env
+/Notes

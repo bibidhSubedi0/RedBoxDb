@@ -7,6 +7,8 @@
 #include <fstream>
 #include <queue>
 #include <algorithm>
+#include "redboxdb/cpu_features.hpp"
+#include "redboxdb/distance.hpp"
 
 
 namespace CoreEngine{
@@ -14,6 +16,8 @@ namespace CoreEngine{
     {
         _manager = std::make_unique<StorageManager::Manager>(file_name,dim, capacity);
         load_tombstones();
+        use_avx2 = Platform::has_avx2();
+        std::cout << "[DB] AVX2: " << (use_avx2 ? "enabled" : "disabled") << std::endl;
     }
 
     void RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
@@ -72,13 +76,7 @@ namespace CoreEngine{
 
             const float* vec_ptr = record.second; // No std::vector
 
-            // Euclidean Distance using raw pointers
-            float dist = 0.0f;
-            for (size_t d = 0; d < dimension; ++d) {
-                // Access memory directly
-                float diff = vec_ptr[d] - query[d];
-                dist += diff * diff;
-            }
+            float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
 
             if (dist < min_dist) {
                 min_dist = dist;
@@ -137,12 +135,7 @@ namespace CoreEngine{
 
             // --- DISTANCE CALCULATION ---
             const float* vec_ptr = record.second;
-            float dist = 0.0f;
-
-            for (size_t d = 0; d < dimension; ++d) {
-                float diff = vec_ptr[d] - query[d];
-                dist += diff * diff;
-            }
+            float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
 
             // --- THE "TOP N" LOGIC ---
             if (pq.size() < N) {

@@ -17,6 +17,9 @@ namespace CoreEngine {
         // For soft deletion
         std::string tombstone_file;
         std::unordered_set<uint64_t> deleted_ids;
+
+
+        bool use_avx2;
         
     public:
         RedBoxVector(std::string file_name, size_t dim, int capacity = default_capacity);

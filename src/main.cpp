@@ -53,9 +53,10 @@
 //    return 0;
 //}
 
+#include "redboxdb/cpu_features.hpp"
 #include <iostream>
 
 int main() {
-    std::cout << "Run RedBoxServer instead!" << std::endl;
+    std::cout << "AVX2 supported: " << Platform::has_avx2() << std::endl;
     return 0;
 }
