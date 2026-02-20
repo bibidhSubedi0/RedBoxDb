@@ -25,6 +25,7 @@ namespace CoreEngine {
         RedBoxVector(std::string file_name, size_t dim, int capacity = default_capacity);
 
         void insert(uint64_t id, const std::vector<float>& vec);
+        uint64_t insert_auto(const std::vector<float>& vec);
         int search(const std::vector<float>& query);
         std::vector<int> search_N(const std::vector<float>& query, int N);
         bool remove(uint64_t id);

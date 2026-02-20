@@ -34,6 +34,12 @@ namespace CoreEngine{
         }
     }
 
+    uint64_t RedBoxVector::insert_auto(const std::vector<float>& vec) {
+        uint64_t new_id = _manager->next_id();   // get and increment counter
+        insert(new_id, vec);                      // reuse existing insert logic
+        return new_id;                            // tell caller what ID was assigned
+    }
+
     void RedBoxVector::saveToDisk([[maybe_unused]]const std::string& filename) {
         // NOTE: With StorageManager (Memory Mapped Files), explicit saving is not required.
         // The Operating System automatically flushes changes to disk.
@@ -239,6 +245,7 @@ namespace StorageManager {
             header->max_capacity = initial_capacity;
             header->dimensions = dimensions;       // STORE THE DYNAMIC DIM!
             header->data_type_size = sizeof(float);
+            header->next_id = 1;
         }
         else {
             // SAFETY CHECK: If loading existing DB, ensure dimensions match!
@@ -246,6 +253,9 @@ namespace StorageManager {
                 throw std::runtime_error("DB Dimension mismatch! File has " + std::to_string(header->dimensions));
             }
         }
+    }
+    uint64_t Manager::next_id() {
+        return header->next_id++;   // read current, then increment in the mmap'd file
     }
     
     Manager::~Manager() {

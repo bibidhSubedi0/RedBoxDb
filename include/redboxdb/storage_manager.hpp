@@ -22,6 +22,7 @@ namespace StorageManager {
         char* data_start;
         size_t row_size_bytes;
 
+
     public:
         Manager(const std::string& db_file, uint64_t dimensions, int initial_capacity);
         ~Manager();
@@ -29,6 +30,8 @@ namespace StorageManager {
         void add_vector(uint64_t id, const std::vector<float>& vec);
         std::pair<uint64_t, const float*> get_vector_raw(int index);
         uint64_t get_count() const;
+        
+        uint64_t next_id();
     };
 }
 
