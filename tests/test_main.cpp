@@ -227,3 +227,94 @@ TEST_F(SearchNTest, EmptyDatabase) {
     auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 5);
     EXPECT_TRUE(results.empty());
 }
+
+class AutoInsertAndIndexTest : public ::testing::Test {
+protected:
+    std::string db_file = "test_auto.db";
+    std::string del_file = "test_auto.db.del";
+
+    void SetUp() override {
+        if (std::filesystem::exists(db_file)) std::filesystem::remove(db_file);
+        if (std::filesystem::exists(del_file)) std::filesystem::remove(del_file);
+    }
+};
+
+TEST_F(AutoInsertAndIndexTest, AutoIDsAreSequential) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    uint64_t id1 = db.insert_auto({ 1.0f, 0.0f, 0.0f });
+    uint64_t id2 = db.insert_auto({ 0.0f, 1.0f, 0.0f });
+    uint64_t id3 = db.insert_auto({ 0.0f, 0.0f, 1.0f });
+
+    EXPECT_EQ(id1, 1);
+    EXPECT_EQ(id2, 2);
+    EXPECT_EQ(id3, 3);
+}
+
+TEST_F(AutoInsertAndIndexTest, AutoIDsPersistAcrossRestart) {
+    // Phase 1: insert 3 vectors
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 1000);
+        db.insert_auto({ 1.0f, 0.0f, 0.0f });
+        db.insert_auto({ 0.0f, 1.0f, 0.0f });
+        db.insert_auto({ 0.0f, 0.0f, 1.0f });
+    }
+
+    // Phase 2: reopen — next ID should continue from 4, not reset to 1
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 1000);
+        uint64_t id4 = db.insert_auto({ 1.0f, 1.0f, 0.0f });
+        EXPECT_EQ(id4, 4) << "next_id should survive restart";
+    }
+}
+
+TEST_F(AutoInsertAndIndexTest, AutoInsertIsSearchable) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    uint64_t id = db.insert_auto({ 1.0f, 0.0f, 0.0f });
+    int result = db.search({ 0.9f, 0.1f, 0.0f });
+
+    EXPECT_EQ(static_cast<uint64_t>(result), id);
+}
+
+TEST_F(AutoInsertAndIndexTest, IndexUpdateOnInsert) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    // Manual insert then update via index (O(1) path)
+    db.insert(42, { 1.0f, 0.0f, 0.0f });
+    bool updated = db.update(42, { 0.0f, 1.0f, 0.0f });
+
+    EXPECT_TRUE(updated);
+    // Confirm the update took effect
+    int result = db.search({ 0.0f, 0.9f, 0.1f });
+    EXPECT_EQ(result, 42);
+}
+
+TEST_F(AutoInsertAndIndexTest, IndexRemovedOnDelete) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    db.insert(10, { 1.0f, 0.0f, 0.0f });
+    db.remove(10);
+
+    // Update should fail — ID is deleted and removed from index
+    bool updated = db.update(10, { 9.0f, 9.0f, 9.0f });
+    EXPECT_FALSE(updated);
+}
+
+TEST_F(AutoInsertAndIndexTest, MixedManualAndAutoIDs) {
+    CoreEngine::RedBoxVector db(db_file, 3, 1000);
+
+    // Manual insert with high ID
+    db.insert(500, { 5.0f, 0.0f, 0.0f });
+
+    // Auto inserts should still start from 1 (counter is independent)
+    uint64_t id1 = db.insert_auto({ 1.0f, 0.0f, 0.0f });
+    uint64_t id2 = db.insert_auto({ 2.0f, 0.0f, 0.0f });
+
+    EXPECT_EQ(id1, 1);
+    EXPECT_EQ(id2, 2);
+
+    // All three should be searchable
+    EXPECT_EQ(db.search({ 5.1f, 0.0f, 0.0f }), 500);
+    EXPECT_EQ(db.search({ 1.1f, 0.0f, 0.0f }), static_cast<int>(id1));
+}

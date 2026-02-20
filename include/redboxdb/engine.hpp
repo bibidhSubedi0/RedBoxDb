@@ -2,6 +2,7 @@
 #include <unordered_set>
 #include "VectorPoint.hpp"
 #include "redboxdb/storage_manager.hpp"
+#include <unordered_map>
 
 namespace CoreEngine {
 
@@ -18,6 +19,9 @@ namespace CoreEngine {
         std::string tombstone_file;
         std::unordered_set<uint64_t> deleted_ids;
 
+        std::unordered_map<uint64_t, size_t> id_to_index;
+
+
 
         bool use_avx2;
         
@@ -25,6 +29,7 @@ namespace CoreEngine {
         RedBoxVector(std::string file_name, size_t dim, int capacity = default_capacity);
 
         void insert(uint64_t id, const std::vector<float>& vec);
+        uint64_t insert_auto(const std::vector<float>& vec);
         int search(const std::vector<float>& query);
         std::vector<int> search_N(const std::vector<float>& query, int N);
         bool remove(uint64_t id);

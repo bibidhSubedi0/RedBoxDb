@@ -17,6 +17,8 @@ const uint8_t CMD_SEARCH = 2;
 const uint8_t CMD_DELETE = 3;
 const uint8_t CMD_SELECT_DB = 4;
 const uint8_t CMD_UPDATE = 5;
+const uint8_t CMD_INSERT_AUTO = 6;
+const uint8_t CMD_SEARCH_N = 7;
 
 // alias for the Catalog
 using DbCatalog = std::unordered_map<std::string, std::unique_ptr<CoreEngine::RedBoxVector>>;
@@ -135,6 +137,37 @@ void handle_client(SOCKET client_socket, DbCatalog& catalog) {
             // '0' = Failure (ID not found or Deleted)
             char resp = success ? '1' : '0'; 
             send(client_socket, &resp, 1, 0);
+        }
+        else if (cmd == CMD_INSERT_AUTO) {
+            std::vector<float> vec(current_dim);
+            int total = 0;
+            while (total < vec_byte_size) {
+                int n = recv(client_socket, (char*)vec.data() + total, vec_byte_size - total, 0);
+                if (n <= 0) return;
+                total += n;
+            }
+            uint64_t assigned_id = active_db->insert_auto(vec);
+            send(client_socket, (char*)&assigned_id, sizeof(assigned_id), 0);  // send back 8 bytes
+        }
+        else if (cmd == CMD_SEARCH_N) {
+            int n = static_cast<int>(meta_data);  // N comes in the META field
+
+            std::vector<float> query(current_dim);
+            int total = 0;
+            while (total < vec_byte_size) {
+                int recv_n = recv(client_socket, (char*)query.data() + total, vec_byte_size - total, 0);
+                if (recv_n <= 0) return;
+                total += recv_n;
+            }
+
+            std::vector<int> results = active_db->search_N(query, n);
+
+            // Send: [result_count (uint32)] [id_0 (int32)] [id_1] ...
+            uint32_t count = static_cast<uint32_t>(results.size());
+            send(client_socket, (char*)&count, sizeof(count), 0);
+            if (count > 0) {
+                send(client_socket, (char*)results.data(), count * sizeof(int), 0);
+            }
         }
     }
 }
