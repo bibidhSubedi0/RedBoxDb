@@ -1,4 +1,5 @@
 ﻿#include <iostream>
+#include <filesystem>
 #include "redboxdb/engine.hpp"
 #include "redboxdb/storage_manager.hpp"
 #include "redboxdb/VectorPoint.hpp"
@@ -124,6 +125,9 @@ namespace CoreEngine {
         } // f is flushed & closed here
 
         // Replace old file
+        if (std::filesystem::exists(tombstone_file)) {
+            std::filesystem::remove(tombstone_file);
+        }
         if (std::rename(tmp_file.c_str(), tombstone_file.c_str()) != 0) {
             std::cerr << "[DB] compact_tombstones: rename failed\n";
             return;

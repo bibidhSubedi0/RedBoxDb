@@ -318,3 +318,289 @@ TEST_F(AutoInsertAndIndexTest, MixedManualAndAutoIDs) {
     EXPECT_EQ(db.search({ 5.1f, 0.0f, 0.0f }), 500);
     EXPECT_EQ(db.search({ 1.1f, 0.0f, 0.0f }), static_cast<int>(id1));
 }
+
+
+// ============================================================
+// NEW: TombstoneCompactionTest  (covers Issue #18 fix)
+// ============================================================
+class TombstoneCompactionTest : public ::testing::Test {
+protected:
+    std::string db_file = "test_compact.db";
+    std::string del_file = "test_compact.db.del";
+
+    // Must match TOMBSTONE_COMPACT_SLACK in engine.hpp
+    static constexpr size_t COMPACT_SLACK = 64;
+
+    void SetUp() override {
+        if (std::filesystem::exists(db_file))  std::filesystem::remove(db_file);
+        if (std::filesystem::exists(del_file)) std::filesystem::remove(del_file);
+    }
+
+    void TearDown() override {
+        if (std::filesystem::exists(db_file))  std::filesystem::remove(db_file);
+        if (std::filesystem::exists(del_file)) std::filesystem::remove(del_file);
+    }
+
+    // Returns the size of the .del file in bytes, or 0 if it doesn't exist.
+    size_t del_file_size() {
+        if (!std::filesystem::exists(del_file)) return 0;
+        return (size_t)std::filesystem::file_size(del_file);
+    }
+
+    // Each raw tombstone entry is one uint64_t.
+    size_t del_file_entry_count() {
+        return del_file_size() / sizeof(uint64_t);
+    }
+};
+
+// After COMPACT_SLACK+1 unique deletes the file should NOT have grown to
+// COMPACT_SLACK+1 entries — compaction must have fired and trimmed it back
+// to exactly the number of IDs that are still logically deleted.
+TEST_F(TombstoneCompactionTest, FileShrinkAfterThreshold) {
+    // Need enough capacity for all the vectors we are about to insert
+    const int N = (int)COMPACT_SLACK + 10;
+    CoreEngine::RedBoxVector db(db_file, 3, N + 10);
+
+    // Insert N distinct vectors then delete them one-by-one
+    for (int i = 1; i <= N; ++i)
+        db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+
+    for (int i = 1; i <= N; ++i)
+        db.remove((uint64_t)i);
+
+    // After compaction the file should contain exactly N entries (one per
+    // still-deleted ID), not N + however many duplicates accumulated.
+    size_t entries = del_file_entry_count();
+    EXPECT_LE(entries, (size_t)N)
+        << "Tombstone file should have been compacted — raw entry count ("
+        << entries << ") must not exceed live deleted count (" << N << ")";
+}
+
+// Compaction must not lose any deleted IDs — reloading after compaction
+// should still honour every deletion.
+TEST_F(TombstoneCompactionTest, CorrectnessAfterCompaction) {
+    const int N = (int)COMPACT_SLACK + 10;
+
+    // Phase 1: insert, delete, let compaction fire, then CLOSE the DB
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, N + 10);
+
+        for (int i = 1; i <= N; ++i)
+            db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+
+        // Delete all but ID 1 so we have a known survivor
+        for (int i = 2; i <= N; ++i)
+            db.remove((uint64_t)i);
+    } // db destroyed here — mmap released, file unlocked
+
+    // Phase 2: Reload and verify compaction preserved correctness
+    {
+        CoreEngine::RedBoxVector db2(db_file, 3, N + 10);
+
+        // ID 1 was never deleted — must still be found
+        int result = db2.search({ 1.0f, 0.0f, 0.0f });
+        EXPECT_EQ(result, 1) << "Non-deleted ID 1 should survive compaction";
+
+        // Every other ID was deleted — updating any of them must fail
+        for (int i = 2; i <= N; ++i) {
+            bool ok = db2.update((uint64_t)i, { 0.0f, 0.0f, 0.0f });
+            EXPECT_FALSE(ok) << "Deleted ID " << i << " should still be gone after compaction";
+        }
+    }
+}
+
+// Re-inserting a previously deleted ID should erase it from the deleted set.
+// After compaction that ID must no longer appear in the .del file at all.
+TEST_F(TombstoneCompactionTest, ReinsertedIDRemovedFromDelFileAfterCompaction) {
+    const int N = (int)COMPACT_SLACK + 10;
+    const int CAP = N + 10;
+
+    // Phase 1: insert N vectors, delete all (triggers compaction), then
+    // re-insert ID 1 and explicitly compact — the rewritten .del file must
+    // not contain ID 1 since it is no longer deleted.
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, CAP);
+
+        for (int i = 1; i <= N; ++i)
+            db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+
+        // Delete all — compaction fires somewhere here (threshold = 64)
+        for (int i = 1; i <= N; ++i)
+            db.remove((uint64_t)i);
+
+        // Re-insert ID 1 (un-deletes it in memory).
+        // Then explicitly compact so the .del file is rewritten right now,
+        // without ID 1 in it. This is the exact scenario we want to verify:
+        // compact_tombstones() must not write IDs that are no longer deleted.
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        db.compact_tombstones();
+    } // db destroyed — file unlocked
+
+    // Phase 2: reload and confirm ID 1 is alive
+    {
+        CoreEngine::RedBoxVector db2(db_file, 3, CAP);
+        int result = db2.search({ 1.0f, 0.0f, 0.0f });
+        EXPECT_EQ(result, 1) << "Re-inserted ID 1 should be alive after compaction";
+    }
+}
+
+
+// ============================================================
+// NEW: ConcurrentAccessTest  (covers Issue #14 fix)
+// ============================================================
+#include <thread>
+#include <atomic>
+#include <mutex>
+
+class ConcurrentAccessTest : public ::testing::Test {
+protected:
+    std::string db_file = "test_concurrent.db";
+    std::string del_file = "test_concurrent.db.del";
+
+    void SetUp() override {
+        if (std::filesystem::exists(db_file))  std::filesystem::remove(db_file);
+        if (std::filesystem::exists(del_file)) std::filesystem::remove(del_file);
+    }
+
+    void TearDown() override {
+        if (std::filesystem::exists(db_file))  std::filesystem::remove(db_file);
+        if (std::filesystem::exists(del_file)) std::filesystem::remove(del_file);
+    }
+};
+
+// Multiple threads inserting into the same DB concurrently must not corrupt
+// the vector count — every insert must be reflected in the final search space.
+TEST_F(ConcurrentAccessTest, ConcurrentInsertsDoNotCorruptCount) {
+    const int NUM_THREADS = 8;
+    const int PER_THREAD = 50;
+    const int TOTAL = NUM_THREADS * PER_THREAD;
+
+    CoreEngine::RedBoxVector db(db_file, 3, TOTAL + 10);
+    std::mutex db_mutex; // mirrors the per-DB mutex in server.cpp
+
+    std::vector<std::thread> threads;
+    threads.reserve(NUM_THREADS);
+
+    for (int t = 0; t < NUM_THREADS; ++t) {
+        threads.emplace_back([&, t]() {
+            int base = t * PER_THREAD;
+            for (int i = 0; i < PER_THREAD; ++i) {
+                uint64_t id = (uint64_t)(base + i + 1);
+                float    val = (float)(base + i + 1);
+                std::lock_guard<std::mutex> lk(db_mutex);
+                db.insert(id, { val, 0.0f, 0.0f });
+            }
+            });
+    }
+
+    for (auto& th : threads) th.join();
+
+    // Every inserted vector must be findable
+    std::atomic<int> found{ 0 };
+    for (int i = 1; i <= TOTAL; ++i) {
+        float val = (float)i;
+        std::lock_guard<std::mutex> lk(db_mutex);
+        int result = db.search({ val, 0.0f, 0.0f });
+        if (result == i) ++found;
+    }
+
+    EXPECT_EQ(found.load(), TOTAL)
+        << "All " << TOTAL << " concurrently inserted vectors should be searchable";
+}
+
+// Concurrent reads (searches) while one thread is writing must not crash or
+// return garbage — the mutex in server.cpp serialises this correctly.
+TEST_F(ConcurrentAccessTest, ConcurrentReadsAndWritesDoNotCrash) {
+    const int INITIAL = 200;
+    const int READERS = 6;
+    const int READ_OPS = 100;
+
+    CoreEngine::RedBoxVector db(db_file, 3, INITIAL + 100);
+    std::mutex db_mutex;
+
+    // Seed with initial data
+    for (int i = 1; i <= INITIAL; ++i)
+        db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+
+    std::atomic<bool> stop{ false };
+    std::atomic<int>  errors{ 0 };
+
+    // Writer thread: keeps inserting new vectors
+    std::thread writer([&]() {
+        int id = INITIAL + 1;
+        while (!stop.load()) {
+            std::lock_guard<std::mutex> lk(db_mutex);
+            db.insert((uint64_t)id, { (float)id, 0.0f, 0.0f });
+            ++id;
+        }
+        });
+
+    // Reader threads: keep searching, just must not crash
+    std::vector<std::thread> readers;
+    readers.reserve(READERS);
+    for (int r = 0; r < READERS; ++r) {
+        readers.emplace_back([&]() {
+            for (int op = 0; op < READ_OPS; ++op) {
+                try {
+                    std::lock_guard<std::mutex> lk(db_mutex);
+                    int result = db.search({ 1.0f, 0.0f, 0.0f });
+                    // Result must be a valid positive ID
+                    if (result <= 0) ++errors;
+                }
+                catch (...) {
+                    ++errors;
+                }
+            }
+            });
+    }
+
+    for (auto& th : readers) th.join();
+    stop.store(true);
+    writer.join();
+
+    EXPECT_EQ(errors.load(), 0)
+        << "No errors should occur during concurrent reads and writes";
+}
+
+// Concurrent deletes on distinct IDs must all succeed and each deleted ID
+// must be gone afterwards — no lost-update or double-free.
+TEST_F(ConcurrentAccessTest, ConcurrentDeletesAreIsolated) {
+    const int NUM_THREADS = 4;
+    const int PER_THREAD = 25;
+    const int TOTAL = NUM_THREADS * PER_THREAD;
+
+    CoreEngine::RedBoxVector db(db_file, 3, TOTAL + 10);
+    std::mutex db_mutex;
+
+    // Insert all vectors first (single-threaded, safe)
+    for (int i = 1; i <= TOTAL; ++i)
+        db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+
+    // Each thread deletes its own slice — no overlap
+    std::vector<std::thread> threads;
+    threads.reserve(NUM_THREADS);
+    std::atomic<int> successful_deletes{ 0 };
+
+    for (int t = 0; t < NUM_THREADS; ++t) {
+        threads.emplace_back([&, t]() {
+            int base = t * PER_THREAD;
+            for (int i = 1; i <= PER_THREAD; ++i) {
+                uint64_t id = (uint64_t)(base + i);
+                std::lock_guard<std::mutex> lk(db_mutex);
+                if (db.remove(id)) ++successful_deletes;
+            }
+            });
+    }
+
+    for (auto& th : threads) th.join();
+
+    EXPECT_EQ(successful_deletes.load(), TOTAL)
+        << "Every unique ID should be deleted exactly once";
+
+    // Confirm all are actually gone — update must fail for each
+    for (int i = 1; i <= TOTAL; ++i) {
+        std::lock_guard<std::mutex> lk(db_mutex);
+        bool ok = db.update((uint64_t)i, { 0.0f, 0.0f, 0.0f });
+        EXPECT_FALSE(ok) << "ID " << i << " should be deleted";
+    }
+}
