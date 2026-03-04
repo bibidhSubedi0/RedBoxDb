@@ -1,4 +1,5 @@
-#include <iostream>
+﻿#include <iostream>
+#include <filesystem>
 #include "redboxdb/engine.hpp"
 #include "redboxdb/storage_manager.hpp"
 #include "redboxdb/VectorPoint.hpp"
@@ -11,13 +12,14 @@
 #include "redboxdb/distance.hpp"
 
 
-namespace CoreEngine{
-    RedBoxVector::RedBoxVector(std::string file_name, size_t dim, int capacity) : file_name(file_name),tombstone_file(file_name + ".del"), dimension(dim)
+namespace CoreEngine {
+
+    RedBoxVector::RedBoxVector(std::string file_name, size_t dim, int capacity): file_name(file_name), tombstone_file(file_name + ".del"), dimension(dim)
     {
-        _manager = std::make_unique<StorageManager::Manager>(file_name,dim, capacity);
+        _manager = std::make_unique<StorageManager::Manager>(file_name, dim, capacity);
         load_tombstones();
-        
-        // Build ID index from existing file contents
+
+        // Build ID→index from existing file contents
         int existing = static_cast<int>(_manager->get_count());
         for (int i = 0; i < existing; ++i) {
             auto [id, _] = _manager->get_vector_raw(i);
@@ -26,14 +28,15 @@ namespace CoreEngine{
         }
 
         use_avx2 = Platform::has_avx2();
-        std::cout << "[DB] AVX2: " << (use_avx2 ? "enabled" : "disabled") << std::endl;
+        std::cout << "[DB] AVX2: " << (use_avx2 ? "enabled" : "disabled") << "\n";
     }
 
+    // -----------------------------------------------------------------------
     void RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
         if (deleted_ids.count(id)) {
             deleted_ids.erase(id);
-            // ideally we should remove it from the .del file too, 
-            // but for a simple append only log, we can ignore this for now.
+            // The stale tombstone entry for this id will be cleaned up the
+            // next time compact_tombstones() runs : no problem.
         }
         try {
             size_t new_index = _manager->get_count();
@@ -41,60 +44,36 @@ namespace CoreEngine{
             id_to_index[id] = new_index;
         }
         catch (const std::exception& e) {
-            std::cerr << "Insert Error: " << e.what() << std::endl;
+            std::cerr << "Insert Error: " << e.what() << "\n";
         }
     }
 
     uint64_t RedBoxVector::insert_auto(const std::vector<float>& vec) {
-        uint64_t new_id = _manager->next_id();   // get and increment counter
-        insert(new_id, vec);                      // reuse existing insert logic
-        return new_id;                            // tell caller what ID was assigned
+        uint64_t new_id = _manager->next_id();
+        insert(new_id, vec);
+        return new_id;
     }
 
-    void RedBoxVector::saveToDisk([[maybe_unused]]const std::string& filename) {
-        // NOTE: With StorageManager (Memory Mapped Files), explicit saving is not required.
-        // The Operating System automatically flushes changes to disk.
-        // The Manager destructor will also ensure the view is flushed when the app closes.
-
-        std::cout << "-> Persistence handled by StorageManager (Auto-Save active)." << std::endl;
+    void RedBoxVector::saveToDisk([[maybe_unused]] const std::string& filename) {
+        std::cout << "-> Persistence handled by StorageManager (Auto-Save active).\n";
     }
 
     void RedBoxVector::loadFromDisk(const std::string& filename) {
-        // NOTE: The StorageManager constructor already re-opened the file 
-        // and mapped the existing data into memory.
-
-        std::cout << "-> Database attached to: " << filename << std::endl;
-        std::cout << "-> Current Record Count: " << _manager->get_count() << std::endl;
+        std::cout << "-> Database attached to: " << filename << "\n";
+        std::cout << "-> Current Record Count: " << _manager->get_count() << "\n";
     }
 
-    int CoreEngine::RedBoxVector::search(const std::vector<float>& query) {
-        float min_dist = 1e9;
-        int best_id = -1;
-
-        // Cache the loop count to avoid calling function every iteration
-        int count = static_cast<int>(_manager->get_count());
+    // -----------------------------------------------------------------------
+    int RedBoxVector::search(const std::vector<float>& query) {
+        float min_dist = 1e9f;
+        int   best_id = -1;
+        int   count = static_cast<int>(_manager->get_count());
 
         for (int i = 0; i < count; ++i) {
-
-            // --- ZERO COPY READ ---
-            // get a pointer directly to the Memory Map
-            auto record = _manager->get_vector_raw(i);
-
-            uint64_t id = record.first;
-
-            // --- DELETION CHECK ---
-            if (deleted_ids.count(id)) {
-                continue; // Skip this vector, it is dead.
-            }
-
-            // I HAVE ABSOUTELY NO CLUE, IF THIS IS THE RIGHT WAY TO DO THIS BUT FUCK IT WE BALL
-            // (I can already think of 10 problems this can cause *cry emoji)
-            // ----------------------
-
-            const float* vec_ptr = record.second; // No std::vector
+            auto [id, vec_ptr] = _manager->get_vector_raw(i);
+            if (deleted_ids.count(id)) continue;
 
             float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
-
             if (dist < min_dist) {
                 min_dist = dist;
                 best_id = static_cast<int>(id);
@@ -103,82 +82,111 @@ namespace CoreEngine{
         return best_id;
     }
 
+    // -----------------------------------------------------------------------
+    // Tombstone helpers
+    // -----------------------------------------------------------------------
     void RedBoxVector::load_tombstones() {
         std::ifstream f(tombstone_file, std::ios::binary);
-        if (!f.is_open()) return; 
+        if (!f.is_open()) return;
 
         uint64_t id;
         while (f.read(reinterpret_cast<char*>(&id), sizeof(id))) {
             deleted_ids.insert(id);
+            ++tombstone_entries_on_disk;
         }
-        // std::cout << "[DB] Loaded " << deleted_ids.size() << " tombstones." << std::endl;
     }
 
     void RedBoxVector::append_tombstone(uint64_t id) {
-        // Append to disk immediately so it survives a crash
         std::ofstream f(tombstone_file, std::ios::binary | std::ios::app);
         if (f.is_open()) {
             f.write(reinterpret_cast<const char*>(&id), sizeof(id));
+            ++tombstone_entries_on_disk;
         }
     }
 
+    // Rewrites the .del file so it contains exactly one entry per live
+    // deleted ID — no duplicates, no stale re-inserted IDs.
+    //
+    // Called automatically from remove() when the file has accumulated
+    // TOMBSTONE_COMPACT_SLACK extra entries beyond the live set size.
+    void RedBoxVector::compact_tombstones() {
+        // Truncate-and-rewrite (atomic-ish: write to .tmp, then rename)
+        std::string tmp_file = tombstone_file + ".tmp";
+
+        {
+            std::ofstream f(tmp_file, std::ios::binary | std::ios::trunc);
+            if (!f.is_open()) {
+                std::cerr << "[DB] compact_tombstones: could not open " << tmp_file << "\n";
+                return;
+            }
+            for (uint64_t id : deleted_ids) {
+                f.write(reinterpret_cast<const char*>(&id), sizeof(id));
+            }
+        } // f is flushed & closed here
+
+        // Replace old file
+        if (std::filesystem::exists(tombstone_file)) {
+            std::filesystem::remove(tombstone_file);
+        }
+        if (std::rename(tmp_file.c_str(), tombstone_file.c_str()) != 0) {
+            std::cerr << "[DB] compact_tombstones: rename failed\n";
+            return;
+        }
+
+        size_t old_count = tombstone_entries_on_disk;
+        tombstone_entries_on_disk = deleted_ids.size();
+        std::cout << "[DB] Tombstone compacted: " << old_count
+            << " entries -> " << tombstone_entries_on_disk << "\n";
+    }
+
+    // -----------------------------------------------------------------------
     bool RedBoxVector::remove(uint64_t id) {
-        // 1. If already deleted, do nothing
         if (deleted_ids.count(id)) return false;
 
-        // 2. Add to memory (for immediate effect)
         deleted_ids.insert(id);
         id_to_index.erase(id);
-
-        // 3. Persist to disk
         append_tombstone(id);
+
+        // Compact when the file has grown TOMBSTONE_COMPACT_SLACK entries past
+        // the number of IDs that are actually still deleted.
+        if (tombstone_entries_on_disk > deleted_ids.size() + TOMBSTONE_COMPACT_SLACK) {
+            compact_tombstones();
+        }
 
         return true;
     }
 
+    // -----------------------------------------------------------------------
     std::vector<int> RedBoxVector::search_N(const std::vector<float>& query, int N) {
-        // It automatically keeps the LARGEST distance at the top.
         std::priority_queue<std::pair<float, int>> pq;
-
         int count = static_cast<int>(_manager->get_count());
 
         for (int i = 0; i < count; ++i) {
-
-            // --- ZERO COPY READ ---
-            auto record = _manager->get_vector_raw(i);
-            uint64_t id = record.first;
-
-            // --- DELETION CHECK ---
+            auto [id, vec_ptr] = _manager->get_vector_raw(i);
             if (deleted_ids.count(id)) continue;
 
-            // --- DISTANCE CALCULATION ---
-            const float* vec_ptr = record.second;
             float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
 
-            // --- THE "TOP N" LOGIC ---
-            if (pq.size() < N) {
+            if ((int)pq.size() < N) {
                 pq.push({ dist, static_cast<int>(id) });
             }
             else if (dist < pq.top().first) {
-                pq.pop();  // Kick out the worst one
-                pq.push({ dist, static_cast<int>(id) }); // Add the new one
+                pq.pop();
+                pq.push({ dist, static_cast<int>(id) });
             }
         }
 
-        // --- EXTRACT RESULTS ---
         std::vector<int> result;
         result.reserve(pq.size());
-
         while (!pq.empty()) {
             result.push_back(pq.top().second);
             pq.pop();
         }
-
         std::reverse(result.begin(), result.end());
-
         return result;
     }
 
+    // -----------------------------------------------------------------------
     uint32_t RedBoxVector::get_dim() const {
         return static_cast<uint32_t>(dimension);
     }
@@ -194,123 +202,96 @@ namespace CoreEngine{
         std::memcpy(dst, vec.data(), dimension * sizeof(float));
         return true;
     }
-}
 
+} // namespace CoreEngine
+
+
+// ============================================================
+// StorageManager — unchanged from original, kept in same TU
+// ============================================================
 namespace StorageManager {
-    Manager::Manager(const std::string& db_file, size_t dimensions, int initial_capacity)
-        : filename(db_file),allocated_size(initial_capacity), hFile(NULL), hMapFile(NULL), map_base(nullptr) {
 
-        // 1. CALCULATE STRIDE (The size of one "Row")
-        // 8 bytes for ID + (Dim * 4 bytes for floats)
-        /* Because
-            struct VectorPoint {
-                uint64_t id;
-                std::vector<float> values;
-             };
-        */
+    Manager::Manager(const std::string& db_file, size_t dimensions, int initial_capacity)
+        : filename(db_file), allocated_size(initial_capacity),
+        hFile(NULL), hMapFile(NULL), map_base(nullptr)
+    {
         row_size_bytes = sizeof(uint64_t) + (dimensions * sizeof(float));
 
-        // 2. OPEN FILE
-        hFile = CreateFileA(filename.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        hFile = CreateFileA(filename.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not open file");
 
-        // 3. CHECK SIZE
         LARGE_INTEGER fileSize;
         GetFileSizeEx(hFile, &fileSize);
         size_t current_size = (size_t)fileSize.QuadPart;
-
-        // Total Size = Header + (RowSize * Capacity)
-        size_t required_size = sizeof(CoreEngine::SpecificMetadata) + (row_size_bytes * initial_capacity);
+        size_t required_size = sizeof(CoreEngine::SpecificMetadata) +
+            (row_size_bytes * initial_capacity);
 
         if (current_size == 0) {
             LARGE_INTEGER distance;
             distance.QuadPart = required_size;
-            if (!SetFilePointerEx(hFile, distance, NULL, FILE_BEGIN)) throw std::runtime_error("Resize failed");
-            if (!SetEndOfFile(hFile)) throw std::runtime_error("SetEndOfFile failed");
+            if (!SetFilePointerEx(hFile, distance, NULL, FILE_BEGIN))
+                throw std::runtime_error("Resize failed");
+            if (!SetEndOfFile(hFile))
+                throw std::runtime_error("SetEndOfFile failed");
         }
 
-        // 4. MAP
         hMapFile = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
         map_base = MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 
         header = (CoreEngine::SpecificMetadata*)map_base;
         data_start = (char*)map_base + sizeof(CoreEngine::SpecificMetadata);
 
-        // 5. INITIALIZE HEADER
         if (current_size == 0) {
             header->vector_count = 0;
             header->max_capacity = initial_capacity;
-            header->dimensions = dimensions;       // STORE THE DYNAMIC DIM!
+            header->dimensions = dimensions;
             header->data_type_size = sizeof(float);
             header->next_id = 1;
         }
         else {
-            // SAFETY CHECK: If loading existing DB, ensure dimensions match!
             if (header->dimensions != dimensions) {
-                throw std::runtime_error("DB Dimension mismatch! File has " + std::to_string(header->dimensions));
+                throw std::runtime_error("DB Dimension mismatch! File has " +
+                    std::to_string(header->dimensions));
             }
         }
     }
-    uint64_t Manager::next_id() {
-        return header->next_id++;   // read current, then increment in the mmap'd file
-    }
-    
+
+    uint64_t Manager::next_id() { return header->next_id++; }
+
     Manager::~Manager() {
         if (map_base) { FlushViewOfFile(map_base, 0); UnmapViewOfFile(map_base); }
-        if (hMapFile) CloseHandle(hMapFile);
+        if (hMapFile)  CloseHandle(hMapFile);
         if (hFile != INVALID_HANDLE_VALUE) CloseHandle(hFile);
     }
 
     void Manager::add_vector(uint64_t id, const std::vector<float>& vec) {
-        // Validation
-        if (vec.size() != header->dimensions) {
+        if (vec.size() != header->dimensions)
             throw std::invalid_argument("Vector dimension mismatch");
-        }
-        if (header->vector_count >= header->max_capacity) {
+        if (header->vector_count >= header->max_capacity)
             throw std::runtime_error("Database full");
-        }
 
-        // --- MANUAL POINTER ARITHMETIC ---
-        // This is BAD, like BAD BAD
-
-        // 1. Calculate where this row starts
-        // Offset = Index * Bytes_Per_Row
         size_t offset = header->vector_count * row_size_bytes;
-
-        // 2. Get the pointer to the start of this row
         char* row_ptr = data_start + offset;
 
-        // 3. Write the ID (First 8 bytes)
-        // We cast the char* to a uint64_t* to write the ID
         *(uint64_t*)row_ptr = id;
-
-        // 4. Write the Floats (Next X bytes)
-        // Move pointer past the ID
         float* vec_ptr = (float*)(row_ptr + sizeof(uint64_t));
-
-        // Copy the raw floats
         std::memcpy(vec_ptr, vec.data(), header->dimensions * sizeof(float));
 
         header->vector_count++;
     }
 
-    std::pair<uint64_t, const float*> StorageManager::Manager::get_vector_raw(int index) {
-        // Safety check (optional for raw speed, but good for stability)
-        if (index >= header->vector_count) throw std::out_of_range("Index out of bounds");
+    std::pair<uint64_t, const float*> Manager::get_vector_raw(int index) {
+        if (index >= (int)header->vector_count)
+            throw std::out_of_range("Index out of bounds");
 
-        // 1. Calculate the exact memory address of this row
-        size_t offset = index * row_size_bytes;
+        size_t      offset = index * row_size_bytes;
         char* row_ptr = data_start + offset;
-
-        // 2. Read ID (Direct cast)
-        uint64_t id = *(uint64_t*)row_ptr;
-
-        // 3. Get Pointer to Floats (Jump past the 8-byte ID)
+        uint64_t    id = *(uint64_t*)row_ptr;
         const float* vec_ptr = (const float*)(row_ptr + sizeof(uint64_t));
-
-        // Return the ID and the address of the data (No Copy!)
         return { id, vec_ptr };
     }
 
     uint64_t Manager::get_count() const { return header->vector_count; }
-}
+
+} // namespace StorageManager

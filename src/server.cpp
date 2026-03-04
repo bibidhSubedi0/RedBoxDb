@@ -3,8 +3,10 @@
 #include <string>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <unordered_map> 
+#include <unordered_map>
 #include <memory>
+#include <thread>
+#include <mutex>
 #include "redboxdb/engine.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -20,22 +22,41 @@ const uint8_t CMD_UPDATE = 5;
 const uint8_t CMD_INSERT_AUTO = 6;
 const uint8_t CMD_SEARCH_N = 7;
 
-// alias for the Catalog
+
 using DbCatalog = std::unordered_map<std::string, std::unique_ptr<CoreEngine::RedBoxVector>>;
+using MutexMap = std::unordered_map<std::string, std::unique_ptr<std::mutex>>;
 
-// Remove the global 'const int DIMENSIONS = 128;'
+struct SharedState {
+    DbCatalog  catalog;
+    MutexMap   db_mutexes;
+    std::mutex catalog_mutex; // guards catalog + db_mutexes maps themselves
+};
 
-void handle_client(SOCKET client_socket, DbCatalog& catalog) {
-    std::cout << "[SERVER] Client connected." << std::endl;
+// -----------------------------------------------------------------------
+// handle_client — runs on its own thread, owns the client socket lifetime
+// -----------------------------------------------------------------------
+void handle_client(SOCKET client_socket, SharedState& state) {
+    std::cout << "[SERVER] Client connected (thread " << std::this_thread::get_id() << ")\n";
 
     CoreEngine::RedBoxVector* active_db = nullptr;
+    std::mutex* active_mtx = nullptr;
+
     char header_buffer[5];
 
-    while (true) {
-        int bytes_received = recv(client_socket, header_buffer, 5, 0);
-        if (bytes_received <= 0) break;
+    auto recv_all = [&](char* buf, int len) -> bool {
+        int total = 0;
+        while (total < len) {
+            int n = recv(client_socket, buf + total, len - total, 0);
+            if (n <= 0) return false;
+            total += n;
+        }
+        return true;
+        };
 
-        uint8_t cmd = header_buffer[0];
+    while (true) {
+        if (!recv_all(header_buffer, 5)) break;
+
+        uint8_t  cmd = header_buffer[0];
         uint32_t meta_data = 0;
         memcpy(&meta_data, &header_buffer[1], 4);
 
@@ -44,158 +65,127 @@ void handle_client(SOCKET client_socket, DbCatalog& catalog) {
             uint32_t name_len = meta_data;
             std::string db_name(name_len, ' ');
 
-            // 1. Read the Name
-            int total_read = 0;
-            while (total_read < (int)name_len) {
-                int n = recv(client_socket, &db_name[total_read], name_len - total_read, 0);
-                if (n <= 0) return;
-                total_read += n;
-            }
+            if (!recv_all(&db_name[0], (int)name_len)) break;
 
-            // 2. NEW: Read the Requested Dimension (4 bytes)
             uint32_t requested_dim = 0;
-            recv(client_socket, (char*)&requested_dim, 4, 0);
+            if (!recv_all((char*)&requested_dim, 4)) break;
 
-            std::cout << "[SERVER] Req DB: " << db_name << " (Dim: " << requested_dim << ")" << std::endl;
+            std::cout << "[SERVER] Req DB: " << db_name
+                << " (Dim: " << requested_dim << ")\n";
 
-            // 3. Load or Create
-            if (catalog.find(db_name) == catalog.end()) { // if not found create new
-                std::cout << "   -> New/Loading..." << std::endl;
-                std::string filename = db_name + ".db";
-                // Use the CLIENT PROVIDED dimension!
-                // also, for now we are just using a hard limit of 100k
-                int static_capacity = 100000;
+            {
+                // Lock catalog only long enough to load/create the entry
+                std::lock_guard<std::mutex> lock(state.catalog_mutex);
 
-                catalog[db_name] = std::make_unique<CoreEngine::RedBoxVector>(filename, requested_dim, static_capacity);
+                if (state.catalog.find(db_name) == state.catalog.end()) {
+                    std::cout << "   -> New/Loading...\n";
+                    std::string filename = db_name + ".db";
+                    state.catalog[db_name] = std::make_unique<CoreEngine::RedBoxVector>(
+                        filename, requested_dim, 100000);
+                    state.db_mutexes[db_name] = std::make_unique<std::mutex>();
+                }
+
+                active_db = state.catalog[db_name].get();
+                active_mtx = state.db_mutexes[db_name].get();
             }
 
-            active_db = catalog[db_name].get(); // if found use tei
-
-            // Safety Check: Did client ask for 128 dim but open a 1024 dim file?
             if (active_db->get_dim() != requested_dim) {
-                std::cerr << "   [WARNING] Dimension mismatch! File is " << active_db->get_dim() << std::endl;
+                std::cerr << "   [WARNING] Dimension mismatch! File is "
+                    << active_db->get_dim() << "\n";
             }
 
             send(client_socket, "1", 1, 0);
             continue;
         }
 
-        if (!active_db) return; // Error: No DB selected
+        if (!active_db) break; // No DB selected — drop the client
 
-        // --- DYNAMIC DIMENSION LOGIC ---
-        // Ask the loaded DB how big its vectors are
         int current_dim = active_db->get_dim();
         int vec_byte_size = current_dim * sizeof(float);
 
         if (cmd == CMD_INSERT) {
             std::vector<float> vec(current_dim);
-            int total = 0;
-            while (total < vec_byte_size) {
-                int n = recv(client_socket, (char*)vec.data() + total, vec_byte_size - total, 0);
-                if (n <= 0) return;
-                total += n;
-            }
-            active_db->insert(meta_data, vec);
+            if (!recv_all((char*)vec.data(), vec_byte_size)) break;
+            { std::lock_guard<std::mutex> lk(*active_mtx); active_db->insert(meta_data, vec); }
             send(client_socket, "1", 1, 0);
         }
         else if (cmd == CMD_SEARCH) {
             std::vector<float> query(current_dim);
-            int total = 0;
-            while (total < vec_byte_size) {
-                int n = recv(client_socket, (char*)query.data() + total, vec_byte_size - total, 0);
-                if (n <= 0) return;
-                total += n;
-            }
-            int result_id = active_db->search(query);
+            if (!recv_all((char*)query.data(), vec_byte_size)) break;
+            int result_id;
+            { std::lock_guard<std::mutex> lk(*active_mtx); result_id = active_db->search(query); }
             send(client_socket, (char*)&result_id, 4, 0);
         }
         else if (cmd == CMD_DELETE) {
-            bool success = active_db->remove(meta_data);
+            bool success;
+            { std::lock_guard<std::mutex> lk(*active_mtx); success = active_db->remove(meta_data); }
             char resp = success ? '1' : '0';
             send(client_socket, &resp, 1, 0);
         }
         else if (cmd == CMD_UPDATE) {
-            // Logic is identical to INSERT, but calls db->update()
-            // 1. Determine size
-            // already done mathi
-
             std::vector<float> vec(current_dim);
-            int total = 0;
-
-            // 2. Read Vector Payload
-            while (total < vec_byte_size) {
-                int n = recv(client_socket, (char*)vec.data() + total, vec_byte_size - total, 0);
-                if (n <= 0) return;
-                total += n;
-            }
-
-            // 3. Perform Update
-            bool success = active_db->update(meta_data, vec);
-            
-            // 4. Send Response
-            // '1' = Success (Updated)
-            // '0' = Failure (ID not found or Deleted)
-            char resp = success ? '1' : '0'; 
+            if (!recv_all((char*)vec.data(), vec_byte_size)) break;
+            bool success;
+            { std::lock_guard<std::mutex> lk(*active_mtx); success = active_db->update(meta_data, vec); }
+            char resp = success ? '1' : '0';
             send(client_socket, &resp, 1, 0);
         }
         else if (cmd == CMD_INSERT_AUTO) {
             std::vector<float> vec(current_dim);
-            int total = 0;
-            while (total < vec_byte_size) {
-                int n = recv(client_socket, (char*)vec.data() + total, vec_byte_size - total, 0);
-                if (n <= 0) return;
-                total += n;
-            }
-            uint64_t assigned_id = active_db->insert_auto(vec);
-            send(client_socket, (char*)&assigned_id, sizeof(assigned_id), 0);  // send back 8 bytes
+            if (!recv_all((char*)vec.data(), vec_byte_size)) break;
+            uint64_t assigned_id;
+            { std::lock_guard<std::mutex> lk(*active_mtx); assigned_id = active_db->insert_auto(vec); }
+            send(client_socket, (char*)&assigned_id, sizeof(assigned_id), 0);
         }
         else if (cmd == CMD_SEARCH_N) {
-            int n = static_cast<int>(meta_data);  // N comes in the META field
-
+            int n = static_cast<int>(meta_data);
             std::vector<float> query(current_dim);
-            int total = 0;
-            while (total < vec_byte_size) {
-                int recv_n = recv(client_socket, (char*)query.data() + total, vec_byte_size - total, 0);
-                if (recv_n <= 0) return;
-                total += recv_n;
-            }
-
-            std::vector<int> results = active_db->search_N(query, n);
-
-            // Send: [result_count (uint32)] [id_0 (int32)] [id_1] ...
+            if (!recv_all((char*)query.data(), vec_byte_size)) break;
+            std::vector<int> results;
+            { std::lock_guard<std::mutex> lk(*active_mtx); results = active_db->search_N(query, n); }
             uint32_t count = static_cast<uint32_t>(results.size());
             send(client_socket, (char*)&count, sizeof(count), 0);
-            if (count > 0) {
+            if (count > 0)
                 send(client_socket, (char*)results.data(), count * sizeof(int), 0);
-            }
         }
     }
+
+    closesocket(client_socket);
+    std::cout << "[SERVER] Client disconnected (thread " << std::this_thread::get_id() << ")\n";
 }
+
 int main() {
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return 1;
 
-    // --- CATALOG (Persists across clients, is this a good thing? IDFK, IDFC) ---
-    DbCatalog catalog;
-    // catalog["default"] = std::make_unique<CoreEngine::RedBoxVector>("default.db", DIMENSIONS);
+    SharedState state;
 
     SOCKET server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    sockaddr_in server_addr;
+
+    // Allow port reuse so restart doesn't give "address already in use"
+    int opt = 1;
+    setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+
+    sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(PORT);
 
     bind(server_socket, (sockaddr*)&server_addr, sizeof(server_addr));
-    listen(server_socket, 1);
+    listen(server_socket, SOMAXCONN); // was 1 — allow a real backlog
 
-    std::cout << "[SERVER] Multi-Tenant Manager Listening on Port " << PORT << "..." << std::endl;
+    std::cout << "[SERVER] Multi-Tenant Manager Listening on Port " << PORT
+        << " (multi-threaded)...\n";
 
     while (true) {
         SOCKET client_socket = accept(server_socket, nullptr, nullptr);
-        if (client_socket != INVALID_SOCKET) {
-            handle_client(client_socket, catalog);
-            closesocket(client_socket);
-        }
+        if (client_socket == INVALID_SOCKET) continue;
+
+        // Each client gets its own detached thread.
+        // The thread owns the socket and closes it when done.
+        std::thread([client_socket, &state]() {
+            handle_client(client_socket, state);
+            }).detach();
     }
 
     closesocket(server_socket);

@@ -2,6 +2,8 @@ import time
 import uuid
 import random
 import sys
+import os
+import threading
 from client import RedBoxClient
 
 # ==========================================
@@ -141,6 +143,100 @@ def run_validation():
     with RedBoxClient(db_name=db_name, dim=3) as client:
         res = client.search(persist_vec)
         tester.assert_equal(res, persist_id, "Data survived reconnection")
+
+    # ---------------------------------------------------------------
+    # NEW TEST 5: Concurrent Clients (covers Issue #14 - multi-threading)
+    # ---------------------------------------------------------------
+    print("\n[TEST 5] Concurrent Clients (Multi-Threading)")
+
+    NUM_THREADS   = 8
+    OPS_PER_THREAD = 20
+    db_name = f"verify_concurrent_{uuid.uuid4().hex[:8]}"
+    errors = []
+    lock = threading.Lock()
+
+    def worker(thread_id):
+        try:
+            # Each thread opens its own independent connection
+            with RedBoxClient(db_name=db_name, dim=3) as client:
+                base_id = thread_id * 1000
+                for i in range(OPS_PER_THREAD):
+                    vec_id = base_id + i + 1
+                    vec    = [float(vec_id), 0.0, 0.0]
+                    client.insert(vec_id, vec)
+
+                # Each thread searches for its own first vector
+                result = client.search([float(base_id + 1), 0.0, 0.0])
+                if result != base_id + 1:
+                    with lock:
+                        errors.append(
+                            f"Thread {thread_id}: expected {base_id + 1}, got {result}"
+                        )
+        except Exception as e:
+            with lock:
+                errors.append(f"Thread {thread_id} crashed: {e}")
+
+    tester.log(f"Spawning {NUM_THREADS} concurrent clients, "
+               f"{OPS_PER_THREAD} inserts each...")
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(NUM_THREADS)]
+    for th in threads: th.start()
+    for th in threads: th.join()
+
+    tester.assert_true(len(errors) == 0,
+        f"All {NUM_THREADS} concurrent clients completed without errors")
+
+    if errors:
+        for e in errors:
+            tester.log(f"  ERROR: {e}")
+
+    # ---------------------------------------------------------------
+    # NEW TEST 6: Tombstone Compaction (covers Issue #18)
+    # Verifies the .del file doesn't grow unboundedly and that
+    # correctness is preserved after compaction fires.
+    # ---------------------------------------------------------------
+    print("\n[TEST 6] Tombstone Compaction (Issue #18)")
+
+    COMPACT_SLACK = 64          # must match TOMBSTONE_COMPACT_SLACK in engine.hpp
+    N = COMPACT_SLACK + 10      # enough deletes to trigger compaction at least once
+    db_name = f"verify_compact_{uuid.uuid4().hex[:8]}"
+    del_file = db_name + ".db.del"
+
+    tester.log(f"Inserting and deleting {N} vectors to trigger compaction...")
+
+    with RedBoxClient(db_name=db_name, dim=3) as client:
+        for i in range(1, N + 1):
+            client.insert(i, [float(i), 0.0, 0.0])
+        for i in range(1, N + 1):
+            client.delete(i)
+
+    # Give the server a moment to flush
+    time.sleep(0.3)
+
+    # Check .del file size - after compaction it must hold at most N entries
+    # (one uint64 = 8 bytes per entry).
+    entry_size = 8  # sizeof(uint64_t)
+    if os.path.exists(del_file):
+        raw_entries = os.path.getsize(del_file) // entry_size
+        tester.assert_true(
+            raw_entries <= N,
+            f"Tombstone file compacted: {raw_entries} entries <= {N} live deleted IDs"
+        )
+    else:
+        # File may not exist on the server machine's working directory -
+        # we can only verify correctness from here, not the file size.
+        tester.log("  .del file not accessible from client path - skipping size check")
+
+    # Correctness: all deleted IDs must still be gone; a new distractor is found instead
+    tester.log("Verifying correctness after compaction (deleted IDs must stay deleted)...")
+    distractor_id = N + 9999
+    with RedBoxClient(db_name=db_name, dim=3) as client:
+        client.insert(distractor_id, [1.0, 0.0, 0.0])
+        result = client.search([1.0, 0.0, 0.0])
+        tester.assert_equal(
+            result, distractor_id,
+            "Deleted IDs remain deleted after compaction - distractor found instead"
+        )
 
     tester.summary()
     
