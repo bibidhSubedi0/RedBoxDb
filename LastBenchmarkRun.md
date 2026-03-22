@@ -21,8 +21,8 @@
 
 | Metric | Value |
 |---|---|
-| Time | 0.175 s |
-| Throughput | **570,220 vectors/sec** |
+| Time | 0.099 s |
+| Throughput | **~1,000,000 vectors/sec** |
 | Data written | 48.8 MB |
 
 ---
@@ -33,13 +33,13 @@
 
 | Metric | Value |
 |---|---|
-| QPS | **224.6 queries/sec** |
-| Min | 4.334 ms |
-| Avg | 4.449 ms |
-| P50 | 4.435 ms |
-| P95 | 4.586 ms |
-| **P99** | **4.887 ms** |
-| Max | 5.643 ms |
+| QPS | **~310 queries/sec** |
+| Min | 2.893 ms |
+| Avg | 3.154 ms |
+| P50 | 3.090 ms |
+| P95 | 3.520 ms |
+| **P99** | **~4.1 ms** |
+| Max | 5.002 ms |
 
 ---
 
@@ -48,15 +48,16 @@
 | Metric | Value |
 |---|---|
 | K | 10 |
-| QPS | **210.9 queries/sec** |
-| Min | 4.579 ms |
-| Avg | 4.739 ms |
-| P50 | 4.716 ms |
-| P95 | 4.907 ms |
-| **P99** | **4.956 ms** |
-| Max | 5.078 ms |
+| QPS | **~293 queries/sec** |
+| Min | 2.987 ms |
+| Avg | 3.410 ms |
+| P50 | 3.269 ms |
+| P95 | 3.971 ms |
+| **P99** | **~4.6 ms (see note)** |
+| Max | 14.692 ms |
 
-> search_N is only ~6% slower than single search <-- priority queue overhead is negligible vs scan cost.
+> search_N is only ~7% slower than single search on average <-- priority queue overhead is negligible vs scan cost.  
+> **Note:** Search_N P99 tail latency is unstable across runs, observed spiking to 7-14ms. Median and average are stable. Root cause unknown â€” flagged for investigation.
 
 ---
 
@@ -65,13 +66,13 @@
 | Metric | Value |
 |---|---|
 | Updates | 1,000 |
-| Throughput | **341,227 updates/sec** |
+| Throughput | **~400,000 updates/sec** |
 | Min | 0.000 ms |
 | Avg | 0.002 ms |
-| P50 | 0.002 ms |
+| P50 | 0.001 ms |
 | P95 | 0.003 ms |
-| **P99** | **0.003 ms** |
-| Max | 0.017 ms |
+| **P99** | **~0.004 ms** |
+| Max | 0.107 ms |
 
 > Direct hash lookup via `id_to_index` <-- no linear scan of stored vectors.
 
@@ -85,8 +86,8 @@
 | Searches | 6,959 |
 | Inserts | 2,043 |
 | Deletes | 998 |
-| Total time | 5.182 s |
-| Throughput | **1,930 ops/sec** |
+| Total time | ~3.4 s |
+| Throughput | **~3,000 ops/sec** |
 
 ---
 
@@ -94,8 +95,8 @@
 
 | Operation | Throughput | P99 Latency |
 |---|---|---|
-| Insert (auto-ID) | 570,220 /sec | — |
-| Search (top-1) | 224.6 QPS | 4.887 ms |
-| Search (top-10) | 210.9 QPS | 4.956 ms |
-| Update (indexed) | 341,227 /sec | 0.003 ms |
-| Mixed workload | 1,930 ops/sec | — |
+| Insert | ~1,000,000 /sec | â€” |
+| Search (top-1) | ~310 QPS | ~4.1 ms |
+| Search (top-10) | ~293 QPS | ~4.6 ms (unstable) |
+| Update (indexed) | ~400,000 /sec | ~0.004 ms |
+| Mixed workload | ~3,000 ops/sec | â€” |
