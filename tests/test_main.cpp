@@ -511,6 +511,8 @@ TEST_F(ConcurrentAccessTest, ConcurrentInsertsDoNotCorruptCount) {
 // Concurrent reads (searches) while one thread is writing must not crash or
 // return garbage — the mutex in server.cpp serialises this correctly.
 TEST_F(ConcurrentAccessTest, ConcurrentReadsAndWritesDoNotCrash) {
+    std::streambuf* old_cerr = std::cerr.rdbuf(nullptr);
+
     const int INITIAL = 200;
     const int READERS = 6;
     const int READ_OPS = 100;
@@ -560,6 +562,7 @@ TEST_F(ConcurrentAccessTest, ConcurrentReadsAndWritesDoNotCrash) {
 
     EXPECT_EQ(errors.load(), 0)
         << "No errors should occur during concurrent reads and writes";
+    std::cerr.rdbuf(old_cerr);
 }
 
 // Concurrent deletes on distinct IDs must all succeed and each deleted ID

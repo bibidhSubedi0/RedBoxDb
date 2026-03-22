@@ -374,3 +374,7 @@ __pycache__/
 venv/
 .env
 /Notes
+
+
+*.db
+*.del

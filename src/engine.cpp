@@ -2,7 +2,6 @@
 #include <filesystem>
 #include "redboxdb/engine.hpp"
 #include "redboxdb/storage_manager.hpp"
-#include "redboxdb/VectorPoint.hpp"
 #include <vector>
 #include <cmath>
 #include <fstream>

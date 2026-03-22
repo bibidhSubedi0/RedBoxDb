@@ -1,7 +1,6 @@
 ﻿#pragma once
 #include <vector>
 #include <unordered_set>
-#include "VectorPoint.hpp"
 #include "redboxdb/storage_manager.hpp"
 #include <unordered_map>
 
