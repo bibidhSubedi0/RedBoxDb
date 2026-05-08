@@ -9,11 +9,12 @@
 #include <algorithm>
 #include "redboxdb/cpu_features.hpp"
 #include "redboxdb/distance.hpp"
+#include <cstring>
 
 
 namespace CoreEngine {
 
-    RedBoxVector::RedBoxVector(std::string file_name, size_t dim, int capacity): file_name(file_name), tombstone_file(file_name + ".del"), dimension(dim)
+    RedBoxVector::RedBoxVector(std::string file_name, size_t dim, int capacity): dimension(dim), file_name(file_name), tombstone_file(file_name + ".del")
     {
         _manager = std::make_unique<StorageManager::Manager>(file_name, dim, capacity);
         load_tombstones();
@@ -209,11 +210,10 @@ namespace CoreEngine {
 // StorageManager — unchanged from original, kept in same TU
 // ============================================================
 namespace StorageManager {
-
-    Manager::Manager(const std::string& db_file, size_t dimensions, int initial_capacity)
-        : filename(db_file), allocated_size(initial_capacity),
-        hFile(NULL), hMapFile(NULL), map_base(nullptr)
-    {
+        Manager::Manager(const std::string& db_file, size_t dimensions, int initial_capacity)
+            : allocated_size(initial_capacity), filename(db_file),
+            hFile(NULL), hMapFile(NULL), map_base(nullptr)
+        {
         row_size_bytes = sizeof(uint64_t) + (dimensions * sizeof(float));
 
         hFile = CreateFileA(filename.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,

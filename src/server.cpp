@@ -9,7 +9,9 @@
 #include <mutex>
 #include "redboxdb/engine.hpp"
 
+#ifdef _MSC_VER
 #pragma comment(lib, "Ws2_32.lib")
+#endif
 
 const int PORT = 8080;
 
@@ -33,7 +35,7 @@ struct SharedState {
 };
 
 // -----------------------------------------------------------------------
-// handle_client — runs on its own thread, owns the client socket lifetime
+// handle_client ï¿½ runs on its own thread, owns the client socket lifetime
 // -----------------------------------------------------------------------
 void handle_client(SOCKET client_socket, SharedState& state) {
     std::cout << "[SERVER] Client connected (thread " << std::this_thread::get_id() << ")\n";
@@ -98,7 +100,7 @@ void handle_client(SOCKET client_socket, SharedState& state) {
             continue;
         }
 
-        if (!active_db) break; // No DB selected — drop the client
+        if (!active_db) break; // No DB selected ï¿½ drop the client
 
         int current_dim = active_db->get_dim();
         int vec_byte_size = current_dim * sizeof(float);
@@ -172,7 +174,7 @@ int main() {
     server_addr.sin_port = htons(PORT);
 
     bind(server_socket, (sockaddr*)&server_addr, sizeof(server_addr));
-    listen(server_socket, SOMAXCONN); // was 1 — allow a real backlog
+    listen(server_socket, SOMAXCONN); // was 1 ï¿½ allow a real backlog
 
     std::cout << "[SERVER] Multi-Tenant Manager Listening on Port " << PORT
         << " (multi-threaded)...\n";
@@ -211,8 +213,8 @@ int main() {
 
 
     CMD ID    Name        META Field        Payload                              Server Response
-    1        INSERT        Vector ID        Raw Float Data(Dim×4 bytes)          1 (Ack)
-    2        SEARCH        (Ignored)        Raw Float Data (Dim×4 bytes)        Result ID (4 bytes)
+    1        INSERT        Vector ID        Raw Float Data(Dimï¿½4 bytes)          1 (Ack)
+    2        SEARCH        (Ignored)        Raw Float Data (Dimï¿½4 bytes)        Result ID (4 bytes)
     3        DELETE        Vector ID        (None)                               1 or 0 (Success/Fail)
     4        SELECT_DB     Name Length      Database Name (UTF-8 String)         1 (Ack)
 */

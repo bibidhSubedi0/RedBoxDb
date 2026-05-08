@@ -243,6 +243,7 @@ int main() {
         const int MIXED_OPS = 10'000;
         const int INITIAL_SIZE = 10'000;
 
+        {
         CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, MIXED_OPS + INITIAL_SIZE);
 
         // Seed with initial data
@@ -287,7 +288,7 @@ int main() {
         std::cout << "   Total Time : " << std::fixed << std::setprecision(3) << secs << " s\n";
         std::cout << "   Throughput : " << std::setprecision(0)
             << (MIXED_OPS / secs) << " ops/sec\n";
-
+}            
         cleanup(db_name);
     }
 
