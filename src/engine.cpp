@@ -203,7 +203,7 @@ namespace CoreEngine {
         return true;
     }
 
-} // namespace CoreEngine
+} 
 
 
 // ============================================================
