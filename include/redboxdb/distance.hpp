@@ -26,6 +26,12 @@ namespace Distance {
             __m256 diff = _mm256_sub_ps(va, vb);           
             sum = _mm256_fmadd_ps(diff, diff, sum);       
         }
+        /*
+            va   = [a0, a1, a2, a3, a4, a5, a6, a7]
+            vb   = [b0, b1, b2, b3, b4, b5, b6, b7]
+            diff = [d0, d1, d2, d3, d4, d5, d6, d7]  ← one subtraction instruction
+            sum  = [d0²,d1²,d2²,d3²,d4²,d5²,d6²,d7²] ← fmadd does diff*diff+sum
+        */
 
         // Horizontal sum
         __m128 lo = _mm256_castps256_ps128(sum);          
@@ -33,7 +39,22 @@ namespace Distance {
         __m128 acc = _mm_add_ps(lo, hi);                  
         acc = _mm_hadd_ps(acc, acc);                      
         acc = _mm_hadd_ps(acc, acc);                      
-        float result = _mm_cvtss_f32(acc);                
+        float result = _mm_cvtss_f32(acc);           
+        
+        /*
+            sum = [s0, s1, s2, s3, s4, s5, s6, s7]
+                ↓ split
+            lo  = [s0, s1, s2, s3]
+            hi  = [s4, s5, s6, s7]
+                ↓ add
+            acc = [s0+s4, s1+s5, s2+s6, s3+s7]
+                ↓ hadd
+                = [s0+s4+s1+s5, s2+s6+s3+s7, ...]
+                ↓ hadd
+                = [total, ...]
+                ↓ extract
+            result = total float value
+        */
 
         // Scalar tail: handle leftover dims not divisible by 8
         for (; d < dim; ++d) {
