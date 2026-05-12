@@ -20,6 +20,11 @@ namespace CoreEngine {
         std::unordered_set<uint64_t> deleted_ids;
         size_t tombstone_entries_on_disk = 0; // tracks raw entry count in the file
 
+        // Hot-path parallel array: deleted_flags[slot] == 1 means that mmap slot
+        // is logically deleted. Indexed by slot position, not by ID.
+        // Replaces the per-row deleted_ids.count() hash lookup in the search loops.
+        std::vector<uint8_t> deleted_flags;
+
         std::unordered_map<uint64_t, size_t> id_to_index;
 
         bool use_avx2;

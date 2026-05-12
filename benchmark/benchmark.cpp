@@ -94,7 +94,7 @@ int main() {
         std::string db_name = DB_BASE + "_insert";
         cleanup(db_name);
 
-        std::cout << "\n[1/5] INSERT THROUGHPUT\n";
+        std::cout << "\n[1/6] INSERT THROUGHPUT\n";
         print_separator();
 
         CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, NUM_VECTORS);
@@ -120,7 +120,7 @@ int main() {
     {
         std::string db_name = DB_BASE + "_insert";  // reuse the populated DB
 
-        std::cout << "\n[2/5] SEARCH LATENCY  (single nearest neighbor)\n";
+        std::cout << "\n[2/6] SEARCH LATENCY  (single nearest neighbor)\n";
         print_separator();
         std::cout << "   Note: DB already in OS page cache from Bench 1.\n";
         std::cout << "         These numbers reflect hot-cache performance.\n";
@@ -159,7 +159,7 @@ int main() {
     {
         std::string db_name = DB_BASE + "_insert";
 
-        std::cout << "\n[3/5] SEARCH_N LATENCY  (top-" << TOP_K << " nearest neighbors)\n";
+        std::cout << "\n[3/6] SEARCH_N LATENCY  (top-" << TOP_K << " nearest neighbors)\n";
         print_separator();
 
         CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, NUM_VECTORS);
@@ -196,7 +196,7 @@ int main() {
     {
         std::string db_name = DB_BASE + "_insert";
 
-        std::cout << "\n[4/5] UPDATE THROUGHPUT  (in-place via id_to_index)\n";
+        std::cout << "\n[4/6] UPDATE THROUGHPUT  (in-place via id_to_index)\n";
         print_separator();
 
         CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, NUM_VECTORS);
@@ -237,7 +237,7 @@ int main() {
         std::string db_name = DB_BASE + "_mixed";
         cleanup(db_name);
 
-        std::cout << "\n[5/5] MIXED WORKLOAD  (70% search | 20% insert | 10% delete)\n";
+        std::cout << "\n[5/6] MIXED WORKLOAD  (70% search | 20% insert | 10% delete)\n";
         print_separator();
 
         const int MIXED_OPS = 10'000;
@@ -289,6 +289,66 @@ int main() {
         std::cout << "   Throughput : " << std::setprecision(0)
             << (MIXED_OPS / secs) << " ops/sec\n";
 }            
+        cleanup(db_name);
+    }
+
+    // ==========================================
+    // BENCH 6: SEARCH UNDER HEAVY DELETION
+    // Seeds 100k vectors, deletes 40%, then
+    // measures search latency — this is the
+    // worst case for the old hash lookup and
+    // the best demonstration of deleted_flags.
+    // ==========================================
+    {
+        std::string db_name = DB_BASE + "_deletion";
+        cleanup(db_name);
+
+        std::cout << "\n[6/6] SEARCH UNDER HEAVY DELETION  (40% of DB deleted)\n";
+        print_separator();
+
+        const int TOTAL     = 100'000;
+        const int DEL_COUNT = TOTAL * 40 / 100; // 40 000 deleted rows
+
+        Stats  s;
+        double total_secs;
+
+        {
+            CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, TOTAL);
+
+            for (int i = 0; i < TOTAL; ++i)
+                db.insert_auto(rand_vec(DIMENSIONS));
+
+            for (int i = 1; i <= DEL_COUNT; ++i)
+                db.remove((uint64_t)i);
+
+            std::cout << "   Inserted   : " << TOTAL     << " vectors\n";
+            std::cout << "   Deleted    : " << DEL_COUNT << " vectors (40%)\n";
+            std::cout << "   Live rows  : " << (TOTAL - DEL_COUNT) << "\n";
+            print_separator();
+
+            for (int i = 0; i < 10; ++i)
+                db.search(rand_vec(DIMENSIONS));
+
+            std::vector<double> latencies;
+            latencies.reserve(NUM_QUERIES);
+
+            auto total_start = Clock::now();
+            for (int i = 0; i < NUM_QUERIES; ++i) {
+                auto q  = rand_vec(DIMENSIONS);
+                auto t0 = Clock::now();
+                (void)db.search(q);
+                auto t1 = Clock::now();
+                latencies.push_back(Ms(t1 - t0).count());
+            }
+            auto total_end = Clock::now();
+
+            total_secs = std::chrono::duration<double>(total_end - total_start).count();
+            s = compute_stats(latencies);
+        } // db destroyed here — mmap released, file unlocked
+
+        std::cout << "   QPS  : " << std::fixed << std::setprecision(1)
+                  << (NUM_QUERIES / total_secs) << " queries/sec\n";
+        print_stats(s);
         cleanup(db_name);
     }
 

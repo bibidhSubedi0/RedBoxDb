@@ -19,11 +19,14 @@ namespace CoreEngine {
         _manager = std::make_unique<StorageManager::Manager>(file_name, dim, capacity);
         load_tombstones();
 
-        // Build ID→index from existing file contents
+        // Build ID→index and deleted_flags from existing file contents
         int existing = static_cast<int>(_manager->get_count());
+        deleted_flags.resize(existing, 0);
         for (int i = 0; i < existing; ++i) {
             auto [id, _] = _manager->get_vector_raw(i);
-            if (!deleted_ids.count(id))
+            if (deleted_ids.count(id))
+                deleted_flags[i] = 1;
+            else
                 id_to_index[id] = i;
         }
 
@@ -34,14 +37,22 @@ namespace CoreEngine {
     // -----------------------------------------------------------------------
     void RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
         if (deleted_ids.count(id)) {
+            // clear the old slots flag, it stays in the mmap as a zombie,
+            // but we don't want it showing up as deleted in scans anymore.
+            auto old_it = id_to_index.find(id); // not present (erased on remove)
+            // old slot flag: we don't have the index anymore, so we can't clear it.
+            // It will be skipped correctly: the new append below gets flag=0,
+            // and the old zombie slot has no entry in id_to_index so update()
+            // won't touch it. The flag on the old slot stays 1 (correct : it IS
+            // a dead row). The new row gets flag=0.
+            (void)old_it;
             deleted_ids.erase(id);
-            // The stale tombstone entry for this id will be cleaned up the
-            // next time compact_tombstones() runs : no problem.
         }
         try {
             size_t new_index = _manager->get_count();
             _manager->add_vector(id, vec);
             id_to_index[id] = new_index;
+            deleted_flags.push_back(0); // new slot is live
         }
         catch (const std::exception& e) {
             std::cerr << "Insert Error: " << e.what() << "\n";
@@ -70,8 +81,8 @@ namespace CoreEngine {
         int   count = static_cast<int>(_manager->get_count());
 
         for (int i = 0; i < count; ++i) {
+            if (deleted_flags[i]) continue;
             auto [id, vec_ptr] = _manager->get_vector_raw(i);
-            if (deleted_ids.count(id)) continue;
 
             float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
             if (dist < min_dist) {
@@ -143,12 +154,16 @@ namespace CoreEngine {
     bool RedBoxVector::remove(uint64_t id) {
         if (deleted_ids.count(id)) return false;
 
+        // Mark the slot as deleted in the hot-path array before erasing from index
+        auto it = id_to_index.find(id);
+        if (it != id_to_index.end()) {
+            deleted_flags[it->second] = 1;
+            id_to_index.erase(it);
+        }
+
         deleted_ids.insert(id);
-        id_to_index.erase(id);
         append_tombstone(id);
 
-        // Compact when the file has grown TOMBSTONE_COMPACT_SLACK entries past
-        // the number of IDs that are actually still deleted.
         if (tombstone_entries_on_disk > deleted_ids.size() + TOMBSTONE_COMPACT_SLACK) {
             compact_tombstones();
         }
@@ -162,8 +177,8 @@ namespace CoreEngine {
         int count = static_cast<int>(_manager->get_count());
 
         for (int i = 0; i < count; ++i) {
+            if (deleted_flags[i]) continue;
             auto [id, vec_ptr] = _manager->get_vector_raw(i);
-            if (deleted_ids.count(id)) continue;
 
             float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
 
