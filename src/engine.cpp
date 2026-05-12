@@ -30,8 +30,10 @@ namespace CoreEngine {
                 id_to_index[id] = i;
         }
 
-        use_avx2 = Platform::has_avx2();
-        std::cout << "[DB] AVX2: " << (use_avx2 ? "enabled" : "disabled") << "\n";
+        use_avx2    = Platform::has_avx2();
+        num_threads = std::max(1u, std::thread::hardware_concurrency());
+        std::cout << "[DB] AVX2: " << (use_avx2 ? "enabled" : "disabled")
+                  << " | Threads: " << num_threads << "\n";
     }
 
     // -----------------------------------------------------------------------
@@ -76,16 +78,58 @@ namespace CoreEngine {
 
     // -----------------------------------------------------------------------
     int RedBoxVector::search(const std::vector<float>& query) {
-        float min_dist = 1e9f;
-        int   count = static_cast<int>(_manager->get_count());
+        int count = static_cast<int>(_manager->get_count());
+        if (count == 0) return -1;
+
+        // Single-threaded for small DBs — thread overhead not worth it
+        if (count < PARALLEL_THRESHOLD || num_threads == 1) {
+            float min_dist = 1e9f;
+            int   best_slot = -1;
+            for (int i = 0; i < count; ++i) {
+                if (deleted_flags[i]) continue;
+                const float* vec_ptr = _manager->get_float_ptr(i);
+                float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
+                if (dist < min_dist) { min_dist = dist; best_slot = i; }
+            }
+            if (best_slot == -1) return -1;
+            return static_cast<int>(_manager->get_id(best_slot));
+        }
+
+        // Parallel scan — each thread scans its own slice, writes to its own slot
+        // in these arrays (no false sharing between threads, each index is independent)
+        struct ThreadResult { float min_dist; int best_slot; };
+        std::vector<ThreadResult> results(num_threads, { 1e9f, -1 });
+
+        auto worker = [&](size_t tid, int start, int end) {
+            float local_min  = 1e9f;
+            int   local_best = -1;
+            for (int i = start; i < end; ++i) {
+                if (deleted_flags[i]) continue;
+                const float* vec_ptr = _manager->get_float_ptr(i);
+                float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
+                if (dist < local_min) { local_min = dist; local_best = i; }
+            }
+            results[tid] = { local_min, local_best };
+        };
+
+        // Divide slots as evenly as possible across threads
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        int slice = count / (int)num_threads;
+        for (size_t t = 0; t < num_threads; ++t) {
+            int start = (int)t * slice;
+            int end   = (t == num_threads - 1) ? count : start + slice;
+            threads.emplace_back(worker, t, start, end);
+        }
+        for (auto& th : threads) th.join();
+
+        // Reduce: find global winner across all thread results
         int   best_slot = -1;
-        for (int i = 0; i < count; ++i) {
-            if (deleted_flags[i]) continue;
-            const float* vec_ptr = _manager->get_float_ptr(i);
-            float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
-            if (dist < min_dist) {
-                min_dist = dist;
-                best_slot = i;
+        float best_dist = 1e9f;
+        for (auto& r : results) {
+            if (r.best_slot != -1 && r.min_dist < best_dist) {
+                best_dist = r.min_dist;
+                best_slot = r.best_slot;
             }
         }
         if (best_slot == -1) return -1;
@@ -172,29 +216,69 @@ namespace CoreEngine {
 
     // -----------------------------------------------------------------------
     std::vector<int> RedBoxVector::search_N(const std::vector<float>& query, int N) {
-        std::priority_queue<std::pair<float, int>> pq;
+        using PQ = std::priority_queue<std::pair<float, int>>;
         int count = static_cast<int>(_manager->get_count());
+        if (count == 0) return {};
 
-        for (int i = 0; i < count; ++i) {
-            if (deleted_flags[i]) continue;
-            const float* vec_ptr = _manager->get_float_ptr(i);
-            float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
-
-            if ((int)pq.size() < N) {
-                pq.push({ dist, i }); // store slot index, resolve to ID after scan
+        // Single-threaded for small DBs
+        if (count < PARALLEL_THRESHOLD || num_threads == 1) {
+            PQ pq;
+            for (int i = 0; i < count; ++i) {
+                if (deleted_flags[i]) continue;
+                const float* vec_ptr = _manager->get_float_ptr(i);
+                float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
+                if ((int)pq.size() < N)              pq.push({ dist, i });
+                else if (dist < pq.top().first) { pq.pop(); pq.push({ dist, i }); }
             }
-            else if (dist < pq.top().first) {
+            std::vector<int> result;
+            result.reserve(pq.size());
+            while (!pq.empty()) {
+                result.push_back(static_cast<int>(_manager->get_id(pq.top().second)));
                 pq.pop();
-                pq.push({ dist, i });
+            }
+            std::reverse(result.begin(), result.end());
+            return result;
+        }
+
+        // Each thread maintains its own local top-N priority queue
+        std::vector<PQ> local_pqs(num_threads);
+
+        auto worker = [&](size_t tid, int start, int end) {
+            PQ& pq = local_pqs[tid];
+            for (int i = start; i < end; ++i) {
+                if (deleted_flags[i]) continue;
+                const float* vec_ptr = _manager->get_float_ptr(i);
+                float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
+                if ((int)pq.size() < N)              pq.push({ dist, i });
+                else if (dist < pq.top().first) { pq.pop(); pq.push({ dist, i }); }
+            }
+        };
+
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        int slice = count / (int)num_threads;
+        for (size_t t = 0; t < num_threads; ++t) {
+            int start = (int)t * slice;
+            int end   = (t == num_threads - 1) ? count : start + slice;
+            threads.emplace_back(worker, t, start, end);
+        }
+        for (auto& th : threads) th.join();
+
+        // Merge all local top-N queues into one global top-N
+        PQ global_pq;
+        for (auto& pq : local_pqs) {
+            while (!pq.empty()) {
+                auto [dist, slot] = pq.top(); pq.pop();
+                if ((int)global_pq.size() < N)              global_pq.push({ dist, slot });
+                else if (dist < global_pq.top().first) { global_pq.pop(); global_pq.push({ dist, slot }); }
             }
         }
 
         std::vector<int> result;
-        result.reserve(pq.size());
-        while (!pq.empty()) {
-            int slot = pq.top().second;
-            result.push_back(static_cast<int>(_manager->get_id(slot)));
-            pq.pop();
+        result.reserve(global_pq.size());
+        while (!global_pq.empty()) {
+            result.push_back(static_cast<int>(_manager->get_id(global_pq.top().second)));
+            global_pq.pop();
         }
         std::reverse(result.begin(), result.end());
         return result;
