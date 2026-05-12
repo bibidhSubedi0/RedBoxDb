@@ -1,8 +1,10 @@
 ﻿#pragma once
 #include <vector>
 #include <unordered_set>
-#include "redboxdb/storage_manager.hpp"
 #include <unordered_map>
+#include <thread>
+#include <algorithm>
+#include "redboxdb/storage_manager.hpp"
 
 namespace CoreEngine {
 
@@ -27,7 +29,10 @@ namespace CoreEngine {
 
         std::unordered_map<uint64_t, size_t> id_to_index;
 
-        bool use_avx2;
+        bool   use_avx2;
+        size_t num_threads;
+
+        static constexpr int PARALLEL_THRESHOLD = 50000;
 
     public:
         RedBoxVector(std::string file_name, size_t dim, int capacity = default_capacity);
