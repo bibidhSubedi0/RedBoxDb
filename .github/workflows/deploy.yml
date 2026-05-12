@@ -34,14 +34,14 @@ jobs:
     - name: Build RedBoxServer.exe
       run: |
         cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
-        cmake --build build --config Release
+        cmake --build build
 
     # 5. Move EXE to SDK Folder
     - name: Package EXE into SDK
       shell: powershell
       run: |
         if (-not (Test-Path "redbox-sdk/redboxdb")) { mkdir "redbox-sdk/redboxdb" }
-        copy "build/src/Release/RedBoxServer.exe" "redbox-sdk/redboxdb/"
+        copy "build/src/RedBoxServer.exe" "redbox-sdk/redboxdb/"
         if (-not (Test-Path "redbox-sdk/redboxdb/RedBoxServer.exe")) { 
             Write-Error "EXE copy failed!" 
             exit 1
@@ -77,4 +77,4 @@ jobs:
         tag_name: ${{ inputs.version }}
         files: |
           ${{ env.WHEEL_PATH }}
-          build/src/Release/RedBoxServer.exe
+          build/src/RedBoxServer.exe
