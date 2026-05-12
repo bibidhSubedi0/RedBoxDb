@@ -33,7 +33,7 @@ jobs:
     # 4. Build C++ Server
     - name: Build RedBoxServer.exe
       run: |
-        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
         cmake --build build --config Release
 
     # 5. Move EXE to SDK Folder

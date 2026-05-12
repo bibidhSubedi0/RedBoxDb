@@ -19,7 +19,7 @@ jobs:
 
     - name: Build Server
       run: |
-        cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
         cmake --build build --config Release
 
     - name: Create Zip Package
