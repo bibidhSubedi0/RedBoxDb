@@ -23,7 +23,7 @@ namespace CoreEngine {
         int existing = static_cast<int>(_manager->get_count());
         deleted_flags.resize(existing, 0);
         for (int i = 0; i < existing; ++i) {
-            auto [id, _] = _manager->get_vector_raw(i);
+            uint64_t id = _manager->get_id(i);
             if (deleted_ids.count(id))
                 deleted_flags[i] = 1;
             else
@@ -37,13 +37,13 @@ namespace CoreEngine {
     // -----------------------------------------------------------------------
     void RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
         if (deleted_ids.count(id)) {
-            // clear the old slots flag, it stays in the mmap as a zombie,
+            // Clear the old slot's flag — it stays in the mmap as a zombie,
             // but we don't want it showing up as deleted in scans anymore.
             auto old_it = id_to_index.find(id); // not present (erased on remove)
             // old slot flag: we don't have the index anymore, so we can't clear it.
             // It will be skipped correctly: the new append below gets flag=0,
             // and the old zombie slot has no entry in id_to_index so update()
-            // won't touch it. The flag on the old slot stays 1 (correct : it IS
+            // won't touch it. The flag on the old slot stays 1 (correct — it IS
             // a dead row). The new row gets flag=0.
             (void)old_it;
             deleted_ids.erase(id);
@@ -77,20 +77,19 @@ namespace CoreEngine {
     // -----------------------------------------------------------------------
     int RedBoxVector::search(const std::vector<float>& query) {
         float min_dist = 1e9f;
-        int   best_id = -1;
         int   count = static_cast<int>(_manager->get_count());
-
+        int   best_slot = -1;
         for (int i = 0; i < count; ++i) {
             if (deleted_flags[i]) continue;
-            auto [id, vec_ptr] = _manager->get_vector_raw(i);
-
+            const float* vec_ptr = _manager->get_float_ptr(i);
             float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
             if (dist < min_dist) {
                 min_dist = dist;
-                best_id = static_cast<int>(id);
+                best_slot = i;
             }
         }
-        return best_id;
+        if (best_slot == -1) return -1;
+        return static_cast<int>(_manager->get_id(best_slot));
     }
 
     // -----------------------------------------------------------------------
@@ -178,23 +177,23 @@ namespace CoreEngine {
 
         for (int i = 0; i < count; ++i) {
             if (deleted_flags[i]) continue;
-            auto [id, vec_ptr] = _manager->get_vector_raw(i);
-
+            const float* vec_ptr = _manager->get_float_ptr(i);
             float dist = Distance::l2(vec_ptr, query.data(), dimension, use_avx2);
 
             if ((int)pq.size() < N) {
-                pq.push({ dist, static_cast<int>(id) });
+                pq.push({ dist, i }); // store slot index, resolve to ID after scan
             }
             else if (dist < pq.top().first) {
                 pq.pop();
-                pq.push({ dist, static_cast<int>(id) });
+                pq.push({ dist, i });
             }
         }
 
         std::vector<int> result;
         result.reserve(pq.size());
         while (!pq.empty()) {
-            result.push_back(pq.top().second);
+            int slot = pq.top().second;
+            result.push_back(static_cast<int>(_manager->get_id(slot)));
             pq.pop();
         }
         std::reverse(result.begin(), result.end());
@@ -212,8 +211,7 @@ namespace CoreEngine {
         auto it = id_to_index.find(id);
         if (it == id_to_index.end()) return false;
 
-        auto record = _manager->get_vector_raw(static_cast<int>(it->second));
-        float* dst = const_cast<float*>(record.second);
+        float* dst = _manager->get_float_ptr_mut(static_cast<int>(it->second));
         std::memcpy(dst, vec.data(), dimension * sizeof(float));
         return true;
     }
@@ -222,15 +220,25 @@ namespace CoreEngine {
 
 
 // ============================================================
-// StorageManager — unchanged from original, kept in same TU
+// StorageManager — Columnar layout (version 1)
 // ============================================================
 namespace StorageManager {
-        Manager::Manager(const std::string& db_file, size_t dimensions, int initial_capacity)
-            : allocated_size(initial_capacity), filename(db_file),
-            hFile(NULL), hMapFile(NULL), map_base(nullptr)
-        {
-        row_size_bytes = sizeof(uint64_t) + (dimensions * sizeof(float));
 
+    // Helper: set up id_block and float_block pointers from map_base
+    static void setup_pointers(void* map_base, uint64_t capacity,
+                                CoreEngine::SpecificMetadata*& header,
+                                uint64_t*& id_block, float*& float_block)
+    {
+        header      = (CoreEngine::SpecificMetadata*)map_base;
+        id_block    = (uint64_t*)((char*)map_base + sizeof(CoreEngine::SpecificMetadata));
+        float_block = (float*)((char*)id_block + capacity * sizeof(uint64_t));
+    }
+
+    Manager::Manager(const std::string& db_file, size_t dimensions, int initial_capacity)
+        : allocated_size(initial_capacity), filename(db_file),
+          hFile(NULL), hMapFile(NULL), map_base(nullptr),
+          header(nullptr), id_block(nullptr), float_block(nullptr)
+    {
         hFile = CreateFileA(filename.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL,
             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile == INVALID_HANDLE_VALUE) throw std::runtime_error("Could not open file");
@@ -238,12 +246,17 @@ namespace StorageManager {
         LARGE_INTEGER fileSize;
         GetFileSizeEx(hFile, &fileSize);
         size_t current_size = (size_t)fileSize.QuadPart;
-        size_t required_size = sizeof(CoreEngine::SpecificMetadata) +
-            (row_size_bytes * initial_capacity);
+
+        // Columnar layout size:
+        //   header + (capacity * 8) + (capacity * dim * 4)
+        size_t id_block_bytes    = (size_t)initial_capacity * sizeof(uint64_t);
+        size_t float_block_bytes = (size_t)initial_capacity * dimensions * sizeof(float);
+        size_t required_size     = sizeof(CoreEngine::SpecificMetadata)
+                                 + id_block_bytes + float_block_bytes;
 
         if (current_size == 0) {
             LARGE_INTEGER distance;
-            distance.QuadPart = required_size;
+            distance.QuadPart = (LONGLONG)required_size;
             if (!SetFilePointerEx(hFile, distance, NULL, FILE_BEGIN))
                 throw std::runtime_error("Resize failed");
             if (!SetEndOfFile(hFile))
@@ -251,27 +264,41 @@ namespace StorageManager {
         }
 
         hMapFile = CreateFileMappingA(hFile, NULL, PAGE_READWRITE, 0, 0, NULL);
+        if (!hMapFile) throw std::runtime_error("CreateFileMapping failed");
         map_base = MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+        if (!map_base) throw std::runtime_error("MapViewOfFile failed");
 
-        header = (CoreEngine::SpecificMetadata*)map_base;
-        data_start = (char*)map_base + sizeof(CoreEngine::SpecificMetadata);
+        setup_pointers(map_base, (uint64_t)initial_capacity, header, id_block, float_block);
 
         if (current_size == 0) {
-            header->vector_count = 0;
-            header->max_capacity = initial_capacity;
-            header->dimensions = dimensions;
+            header->vector_count   = 0;
+            header->max_capacity   = initial_capacity;
+            header->dimensions     = dimensions;
             header->data_type_size = sizeof(float);
-            header->next_id = 1;
+            header->next_id        = 1;
+            header->version        = CoreEngine::SpecificMetadata::CURRENT_VERSION;
         }
         else {
+            if (header->version != CoreEngine::SpecificMetadata::CURRENT_VERSION) {
+                UnmapViewOfFile(map_base); CloseHandle(hMapFile); CloseHandle(hFile);
+                throw std::runtime_error(
+                    "Legacy database layout detected (version " +
+                    std::to_string(header->version) +
+                    "). Please recreate the database.");
+            }
             if (header->dimensions != dimensions) {
-                throw std::runtime_error("DB Dimension mismatch! File has " +
+                UnmapViewOfFile(map_base); CloseHandle(hMapFile); CloseHandle(hFile);
+                throw std::runtime_error("DB dimension mismatch! File has " +
                     std::to_string(header->dimensions));
             }
         }
     }
 
     uint64_t Manager::next_id() { return header->next_id++; }
+    // SO अहीले लाइ, we are just incremeting the id
+    // but what happens if a vector is deleted? नसोध मलाइ
+    // so definately need a way to get id's any other way then incrementing from a base value!
+    // maybe look for deleted id's first? idk फ्युचर मी पर्रोबल्म
 
     Manager::~Manager() {
         if (map_base) { FlushViewOfFile(map_base, 0); UnmapViewOfFile(map_base); }
@@ -285,25 +312,29 @@ namespace StorageManager {
         if (header->vector_count >= header->max_capacity)
             throw std::runtime_error("Database full");
 
-        size_t offset = header->vector_count * row_size_bytes;
-        char* row_ptr = data_start + offset;
-
-        *(uint64_t*)row_ptr = id;
-        float* vec_ptr = (float*)(row_ptr + sizeof(uint64_t));
-        std::memcpy(vec_ptr, vec.data(), header->dimensions * sizeof(float));
-
+        size_t slot = header->vector_count;
+        id_block[slot] = id;
+        float* dst = float_block + slot * header->dimensions;
+        std::memcpy(dst, vec.data(), header->dimensions * sizeof(float));
         header->vector_count++;
     }
 
-    std::pair<uint64_t, const float*> Manager::get_vector_raw(int index) {
+    const float* Manager::get_float_ptr(int index) const {
         if (index >= (int)header->vector_count)
             throw std::out_of_range("Index out of bounds");
+        return float_block + (size_t)index * header->dimensions;
+    }
 
-        size_t      offset = index * row_size_bytes;
-        char* row_ptr = data_start + offset;
-        uint64_t    id = *(uint64_t*)row_ptr;
-        const float* vec_ptr = (const float*)(row_ptr + sizeof(uint64_t));
-        return { id, vec_ptr };
+    float* Manager::get_float_ptr_mut(int index) {
+        if (index >= (int)header->vector_count)
+            throw std::out_of_range("Index out of bounds");
+        return float_block + (size_t)index * header->dimensions;
+    }
+
+    uint64_t Manager::get_id(int index) const {
+        if (index >= (int)header->vector_count)
+            throw std::out_of_range("Index out of bounds");
+        return id_block[index];
     }
 
     uint64_t Manager::get_count() const { return header->vector_count; }

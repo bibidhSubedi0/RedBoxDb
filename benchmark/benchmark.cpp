@@ -97,11 +97,16 @@ int main() {
         std::cout << "\n[1/6] INSERT THROUGHPUT\n";
         print_separator();
 
+        // Pre-generate all vectors so RNG cost is excluded from the timed section
+        std::cout << "   Pre-generating " << NUM_VECTORS << " vectors...\n";
+        std::vector<std::vector<float>> vectors(NUM_VECTORS);
+        for (auto& v : vectors) v = rand_vec(DIMENSIONS);
+
         CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, NUM_VECTORS);
 
         auto t0 = Clock::now();
         for (int i = 0; i < NUM_VECTORS; ++i)
-            db.insert_auto(rand_vec(DIMENSIONS));
+            db.insert_auto(vectors[i]);
         auto t1 = Clock::now();
 
         double secs = std::chrono::duration<double>(t1 - t0).count();
@@ -112,6 +117,7 @@ int main() {
         std::cout << "   Time       : " << std::fixed << std::setprecision(3) << secs << " s\n";
         std::cout << "   Throughput : " << (long long)rate << " vectors/sec\n";
         std::cout << "   Data Size  : " << std::setprecision(1) << bytes_mb << " MB written\n";
+        std::cout << "   (RNG excluded from timing)\n";
     }
 
     // ==========================================
@@ -349,6 +355,8 @@ int main() {
         std::cout << "   QPS  : " << std::fixed << std::setprecision(1)
                   << (NUM_QUERIES / total_secs) << " queries/sec\n";
         print_stats(s);
+        std::cout << "   (Compare QPS/P99 against Bench 2 to see deleted_flags impact)\n";
+
         cleanup(db_name);
     }
 
