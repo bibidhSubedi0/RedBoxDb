@@ -24,8 +24,9 @@ jobs:
       run: pip install numpy
 
     # 3. Configure CMake
+# 3. Configure CMake
     - name: Configure CMake
-      run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
 
     # 4. Build the Server & Tests
     - name: Build Project
