@@ -20,13 +20,13 @@ jobs:
     - name: Build Server
       run: |
         cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
-        cmake --build build --config Release
+        cmake --build build
 
     - name: Create Zip Package
       shell: powershell
       run: |
         mkdir release_package
-        copy build/src/Release/RedBoxServer.exe release_package/
+        copy build/src/RedBoxServer.exe release_package/
         copy Client/client.py release_package/redbox.py
         Compress-Archive -Path release_package/* -DestinationPath RedBoxDb_Win64.zip
 
