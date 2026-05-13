@@ -10,8 +10,11 @@ namespace CoreEngine {
 
     class RedBoxVector {
     private:
-        static constexpr int    default_capacity = 1000;
-        static constexpr size_t TOMBSTONE_COMPACT_SLACK = 64;
+        static constexpr int     default_capacity      = 1000;
+        static constexpr size_t  TOMBSTONE_COMPACT_SLACK = 64;
+        static constexpr int     PARALLEL_THRESHOLD    = 50000;
+        static constexpr uint8_t DEFAULT_CLUSTERS      = 25;
+        static constexpr uint8_t DEFAULT_PROBES        = 1;
 
         size_t dimension;
         std::unique_ptr<StorageManager::Manager> _manager;
@@ -29,13 +32,19 @@ namespace CoreEngine {
 
         std::unordered_map<uint64_t, size_t> id_to_index;
 
+        // In-memory inverted index: cluster_index[c] = list of slot numbers in cluster c.
+        // Built on open from cluster_block, updated on every insert.
+        // Lets search() jump directly to ~1000 candidates without scanning 100k slots.
+        std::vector<std::vector<int>> cluster_index;
+
         bool   use_avx2;
         size_t num_threads;
 
-        static constexpr int PARALLEL_THRESHOLD = 50000;
-
     public:
-        RedBoxVector(std::string file_name, size_t dim, int capacity = default_capacity);
+        RedBoxVector(std::string file_name, size_t dim,
+                     int     capacity   = default_capacity,
+                     uint8_t k          = DEFAULT_CLUSTERS,
+                     uint8_t num_probes = DEFAULT_PROBES);
 
         void     insert(uint64_t id, const std::vector<float>& vec);
         uint64_t insert_auto(const std::vector<float>& vec);
@@ -48,7 +57,6 @@ namespace CoreEngine {
         // Tombstone helpers
         void load_tombstones();
         void append_tombstone(uint64_t id);
-        // Rewrites the .del file to contain only the current live deleted_ids set.
         void compact_tombstones();
 
         // Legacy / status
