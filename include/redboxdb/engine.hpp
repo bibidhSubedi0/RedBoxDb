@@ -13,8 +13,9 @@ namespace CoreEngine {
         static constexpr int     default_capacity      = 1000;
         static constexpr size_t  TOMBSTONE_COMPACT_SLACK = 64;
         static constexpr int     PARALLEL_THRESHOLD    = 50000;
-        static constexpr uint8_t DEFAULT_CLUSTERS      = 25;
+        static constexpr uint8_t DEFAULT_CLUSTERS      = 10;
         static constexpr uint8_t DEFAULT_PROBES        = 1;
+        static constexpr uint64_t KMEANS_INIT_THRESHOLD = 10000;
 
         size_t dimension;
         std::unique_ptr<StorageManager::Manager> _manager;

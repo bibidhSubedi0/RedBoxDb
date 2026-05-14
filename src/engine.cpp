@@ -69,7 +69,7 @@ namespace CoreEngine {
                 c = 0;
                 _manager->add_vector(id, vec, c);
 
-                if ((uint64_t)(slot + 1) >= 10000) {
+                if ((uint64_t)(slot + 1) >= KMEANS_INIT_THRESHOLD) {
                     // Hit K vectors — run K-Means++ and assign all slots
                     ClusterManager::kmeans_plus_plus_init(
                         _manager->get_centroid_block(),
