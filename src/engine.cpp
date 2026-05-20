@@ -303,13 +303,14 @@ namespace CoreEngine {
     bool RedBoxVector::remove(uint64_t id) {
         if (deleted_ids.count(id)) return false;
 
+        // ID was never inserted — don't write a ghost tombstone
         auto it = id_to_index.find(id);
-        if (it != id_to_index.end()) {
-            deleted_flags[it->second] = 1;
-            // Note: we don't remove from cluster_index — deleted_flags check handles it.
-            // cluster_index entries for deleted slots are simply skipped during search.
-            id_to_index.erase(it);
-        }
+        if (it == id_to_index.end()) return false;
+
+        deleted_flags[it->second] = 1;
+        // Note: we don't remove from cluster_index — deleted_flags check handles it.
+        // cluster_index entries for deleted slots are simply skipped during search.
+        id_to_index.erase(it);
 
         deleted_ids.insert(id);
         append_tombstone(id);

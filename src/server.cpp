@@ -8,6 +8,7 @@
 #include <thread>
 #include <mutex>
 #include "redboxdb/engine.hpp"
+#include <filesystem>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "Ws2_32.lib")
@@ -23,6 +24,7 @@ const uint8_t CMD_SELECT_DB = 4;
 const uint8_t CMD_UPDATE = 5;
 const uint8_t CMD_INSERT_AUTO = 6;
 const uint8_t CMD_SEARCH_N = 7;
+const uint8_t CMD_DROP_DB  = 8;
 
 
 using DbCatalog = std::unordered_map<std::string, std::unique_ptr<CoreEngine::RedBoxVector>>;
@@ -143,12 +145,47 @@ void handle_client(SOCKET client_socket, SharedState& state) {
             int n = static_cast<int>(meta_data);
             std::vector<float> query(current_dim);
             if (!recv_all((char*)query.data(), vec_byte_size)) break;
-            std::vector<int> results;
-            { std::lock_guard<std::mutex> lk(*active_mtx); results = active_db->search_N(query, n); }
-            uint32_t count = static_cast<uint32_t>(results.size());
-            send(client_socket, (char*)&count, sizeof(count), 0);
-            if (count > 0)
-                send(client_socket, (char*)results.data(), count * sizeof(int), 0);
+            if (n <= 0) {
+                // Bad input — send zero results, don't crash
+                uint32_t count = 0;
+                send(client_socket, (char*)&count, sizeof(count), 0);
+            } else {
+                std::vector<int> results;
+                { std::lock_guard<std::mutex> lk(*active_mtx); results = active_db->search_N(query, n); }
+                uint32_t count = static_cast<uint32_t>(results.size());
+                send(client_socket, (char*)&count, sizeof(count), 0);
+                if (count > 0)
+                    send(client_socket, (char*)results.data(), count * sizeof(int), 0);
+            }
+        }
+        else if (cmd == CMD_DROP_DB) {
+            bool success = false;
+            std::string db_to_drop;
+
+            // active_db is already selected; grab its name from the catalog
+            {
+                std::lock_guard<std::mutex> lock(state.catalog_mutex);
+                for (auto& [name, db_ptr] : state.catalog) {
+                    if (db_ptr.get() == active_db) {
+                        db_to_drop = name;
+                        break;
+                    }
+                }
+                if (!db_to_drop.empty()) {
+                    // Erase from catalog — unique_ptr destructor cleans up the engine
+                    state.catalog.erase(db_to_drop);
+                    state.db_mutexes.erase(db_to_drop);
+                    // Delete the .db file from disk
+                    std::filesystem::remove(db_to_drop + ".db");
+                    std::filesystem::remove(db_to_drop + ".db.del");
+                    active_db  = nullptr;
+                    active_mtx = nullptr;
+                    success    = true;
+                }
+            }
+
+            char resp = success ? '1' : '0';
+            send(client_socket, &resp, 1, 0);
         }
     }
 
