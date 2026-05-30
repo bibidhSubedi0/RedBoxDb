@@ -730,3 +730,568 @@ TEST_F(SearchNotFoundTest, SearchNEmptyDbReturnsEmptyVec) {
     CoreEngine::RedBoxVector db(db_file, 3, 100);
     EXPECT_TRUE(db.search_N({ 0.0f, 0.0f, 0.0f }, 5).empty());
 }
+
+#include <spdlog/spdlog.h>
+#include <cmath>
+#include <numeric>
+#include <set>
+#include <unordered_set>
+#include <chrono>
+#include <windows.h>  // Sleep() for retry loop
+
+// ---------------------------------------------------------------------------
+// Shared fixture helper — inherit from this instead of repeating boilerplate
+// ---------------------------------------------------------------------------
+struct DbFixture : public ::testing::Test {
+    std::string db_file;
+    std::string del_file;
+
+    explicit DbFixture() = default;
+
+    void init(const std::string& name) {
+        db_file  = name + ".db";
+        del_file = name + ".db.del";
+    }
+
+    void SetUp() override {
+        spdlog::set_level(spdlog::level::off);
+        cleanup();
+    }
+    void TearDown() override {
+        cleanup();
+        spdlog::set_level(spdlog::level::info);
+    }
+
+    // Retry loop required on Windows: CloseHandle on a memory-mapped file
+    // doesn't always release the OS lock synchronously. We give it up to
+    // 10 x 10ms = 100ms before giving up.
+    void try_remove(const std::string& path) {
+        if (path.empty()) return;
+        for (int retry = 0; retry < 10; ++retry) {
+            if (!std::filesystem::exists(path)) return;
+            std::error_code ec;
+            if (std::filesystem::remove(path, ec)) return;
+            Sleep(10);
+        }
+    }
+
+    void cleanup() {
+        try_remove(db_file);
+        try_remove(del_file);
+        try_remove(del_file + ".tmp");  // compaction leaves this on crash
+    }
+};
+
+// =============================================================================
+// 1. UPDATE TESTS
+//    update() is part of the public API but barely covered above.
+// =============================================================================
+class UpdateTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_update"); DbFixture::SetUp(); }
+};
+
+TEST_F(UpdateTest, UpdateChangesSearchResult) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        db.insert(2, { 5.0f, 0.0f, 0.0f });
+        EXPECT_EQ(db.search({ 1.1f, 0.0f, 0.0f }), 1);
+        bool ok = db.update(1, { 10.0f, 0.0f, 0.0f });
+        EXPECT_TRUE(ok);
+        EXPECT_EQ(db.search({ 1.1f, 0.0f, 0.0f }), 2);
+    }
+}
+
+TEST_F(UpdateTest, UpdateNonExistentIdReturnsFalse) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        EXPECT_FALSE(db.update(999, { 2.0f, 0.0f, 0.0f }));
+        EXPECT_EQ(db.search({ 1.0f, 0.0f, 0.0f }), 1);
+    }
+}
+
+TEST_F(UpdateTest, UpdateDeletedIdReturnsFalse) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(7, { 3.0f, 0.0f, 0.0f });
+        db.remove(7);
+        EXPECT_FALSE(db.update(7, { 3.0f, 0.0f, 0.0f }));
+    }
+}
+
+TEST_F(UpdateTest, DoubleUpdateIsIdempotent) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        db.update(1, { 9.0f, 0.0f, 0.0f });
+        db.update(1, { 9.0f, 0.0f, 0.0f });
+        EXPECT_EQ(db.search({ 9.0f, 0.0f, 0.0f }), 1);
+    }
+}
+
+TEST_F(UpdateTest, UpdatePersistsAcrossReload) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(3, { 1.0f, 0.0f, 0.0f });
+        db.update(3, { 8.0f, 0.0f, 0.0f });
+    }
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        EXPECT_EQ(db.search({ 8.0f, 0.0f, 0.0f }), 3);
+        db.insert(99, { 1.0f, 0.0f, 0.0f });
+        EXPECT_NE(db.search({ 1.0f, 0.0f, 0.0f }), 3);
+    }
+}
+
+
+// =============================================================================
+// 2. DIMENSION CORRECTNESS
+// =============================================================================
+class DimensionTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_dim"); DbFixture::SetUp(); }
+};
+
+TEST_F(DimensionTest, GetDimReturnsConstructorDim) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 128, 100);
+        EXPECT_EQ(db.get_dim(), 128u);
+    }
+}
+
+TEST_F(DimensionTest, HighDimSearchCorrectness) {
+    {
+        const size_t DIM = 64;
+        CoreEngine::RedBoxVector db(db_file, DIM, 200);
+        std::vector<float> v1(DIM, 1.0f);
+        std::vector<float> v2(DIM, 2.0f);
+        db.insert(1, v1);
+        db.insert(2, v2);
+
+        std::vector<float> query(DIM, 1.1f);
+        EXPECT_EQ(db.search(query), 1);
+        std::fill(query.begin(), query.end(), 1.9f);
+        EXPECT_EQ(db.search(query), 2);
+    }
+}
+
+TEST_F(DimensionTest, DimPersistedInHeader) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 16, 50);
+        EXPECT_EQ(db.get_dim(), 16u);
+    }
+    {
+        CoreEngine::RedBoxVector db(db_file, 16, 50);
+        EXPECT_EQ(db.get_dim(), 16u);
+    }
+}
+
+
+// =============================================================================
+// 3. AUTO-ID MONOTONICITY & UNIQUENESS
+// =============================================================================
+class AutoIdTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_autoid"); DbFixture::SetUp(); }
+};
+
+TEST_F(AutoIdTest, StrictlyIncreasing) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 200);
+        uint64_t prev = 0;
+        for (int i = 0; i < 20; ++i) {
+            uint64_t id = db.insert_auto({ (float)i, 0.0f, 0.0f });
+            EXPECT_GT(id, prev) << "ID sequence must be strictly increasing";
+            prev = id;
+        }
+    }
+}
+
+TEST_F(AutoIdTest, NeverReusedAcrossReload) {
+    std::unordered_set<uint64_t> seen;
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 200);
+        for (int i = 0; i < 10; ++i)
+            seen.insert(db.insert_auto({ (float)i, 0.0f, 0.0f }));
+    }
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 200);
+        for (int i = 0; i < 10; ++i) {
+            uint64_t id = db.insert_auto({ (float)i, 0.0f, 0.0f });
+            EXPECT_EQ(seen.count(id), 0u) << "ID " << id << " was already used in previous session";
+            seen.insert(id);
+        }
+    }
+}
+
+TEST_F(AutoIdTest, DeletedIdNotReissued) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 200);
+        uint64_t id1 = db.insert_auto({ 1.0f, 0.0f, 0.0f });
+        db.remove(id1);
+        std::unordered_set<uint64_t> new_ids;
+        for (int i = 0; i < 10; ++i)
+            new_ids.insert(db.insert_auto({ (float)i, 0.0f, 0.0f }));
+        EXPECT_EQ(new_ids.count(id1), 0u) << "Deleted ID must not be reissued";
+    }
+}
+
+
+// =============================================================================
+// 4. REMOVE EDGE CASES
+// =============================================================================
+class RemoveEdgeTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_remove_edge"); DbFixture::SetUp(); }
+};
+
+TEST_F(RemoveEdgeTest, DoubleRemoveReturnsFalse) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        EXPECT_TRUE(db.remove(1));
+        EXPECT_FALSE(db.remove(1));
+    }
+}
+
+TEST_F(RemoveEdgeTest, RemoveNonExistentReturnsFalse) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        EXPECT_FALSE(db.remove(42));
+    }
+}
+
+TEST_F(RemoveEdgeTest, RemoveAllThenSearchReturnsSentinel) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        db.insert(2, { 2.0f, 0.0f, 0.0f });
+        db.insert(3, { 3.0f, 0.0f, 0.0f });
+        db.remove(1); db.remove(2); db.remove(3);
+        EXPECT_EQ(db.search({ 1.0f, 0.0f, 0.0f }), -1);
+        EXPECT_TRUE(db.search_N({ 1.0f, 0.0f, 0.0f }, 5).empty());
+    }
+}
+
+TEST_F(RemoveEdgeTest, RemoveAcrossSessionsIdempotent) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(55, { 5.0f, 0.0f, 0.0f });
+        db.remove(55);
+    }
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        EXPECT_FALSE(db.remove(55));
+    }
+}
+
+
+// =============================================================================
+// 5. SEARCH ACCURACY — TIEBREAKER & EXACT MATCH
+// =============================================================================
+class SearchAccuracyTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_search_acc"); DbFixture::SetUp(); }
+};
+
+TEST_F(SearchAccuracyTest, ExactMatchAlwaysWins) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 4, 200);
+        db.insert(10, { 3.0f, 1.4f, 1.5f, 9.2f });
+        db.insert(20, { 9.9f, 8.8f, 7.7f, 6.6f });
+        db.insert(30, { 0.1f, 0.2f, 0.3f, 0.4f });
+        EXPECT_EQ(db.search({ 3.0f, 1.4f, 1.5f, 9.2f }), 10);
+        EXPECT_EQ(db.search({ 9.9f, 8.8f, 7.7f, 6.6f }), 20);
+        EXPECT_EQ(db.search({ 0.1f, 0.2f, 0.3f, 0.4f }), 30);
+    }
+}
+
+TEST_F(SearchAccuracyTest, EquidistantReturnsValidId) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 2, 100);
+        db.insert(1, {  1.0f,  1.0f });
+        db.insert(2, { -1.0f, -1.0f });
+        int result = db.search({ 0.0f, 0.0f });
+        EXPECT_TRUE(result == 1 || result == 2)
+            << "Must return one of the inserted IDs, got " << result;
+    }
+}
+
+TEST_F(SearchAccuracyTest, SingleElementAlwaysFound) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 50);
+        db.insert(42, { 7.7f, 3.3f, 1.1f });
+        EXPECT_EQ(db.search({ 0.0f,  0.0f,  0.0f  }), 42);
+        EXPECT_EQ(db.search({ 7.7f,  3.3f,  1.1f  }), 42);
+        EXPECT_EQ(db.search({ 999.f, 999.f, 999.f }), 42);
+    }
+}
+
+TEST_F(SearchAccuracyTest, SearchNWithN1AgreesWithSearch) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 200);
+        for (int i = 1; i <= 20; ++i)
+            db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+
+        std::vector<float> query = { 10.2f, 0.0f, 0.0f };
+        int  single = db.search(query);
+        auto top1   = db.search_N(query, 1);
+        ASSERT_FALSE(top1.empty());
+        EXPECT_EQ(top1[0], single)
+            << "search() and search_N(q,1) must agree on the nearest neighbor";
+    }
+}
+
+TEST_F(SearchAccuracyTest, SearchNResultsAreValidIds) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        std::set<int> inserted;
+        for (int i = 1; i <= 10; ++i) {
+            db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+            inserted.insert(i);
+        }
+        auto results = db.search_N({ 5.0f, 0.0f, 0.0f }, 10);
+        for (int id : results)
+            EXPECT_GT(inserted.count(id), 0u) << "Result ID " << id << " was never inserted";
+    }
+}
+
+
+// =============================================================================
+// 6. SEARCH_N ORDERING GUARANTEES
+// =============================================================================
+class SearchNOrderTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_searchn_order"); DbFixture::SetUp(); }
+};
+
+TEST_F(SearchNOrderTest, ResultsAreInAscendingDistanceOrder) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        for (int i = 1; i <= 5; ++i)
+            db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+
+        auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 5);
+        ASSERT_EQ(results.size(), 5u);
+        for (int rank = 0; rank < 5; ++rank)
+            EXPECT_EQ(results[rank], rank + 1)
+                << "Position " << rank << ": expected " << rank + 1
+                << ", got " << results[rank];
+    }
+}
+
+TEST_F(SearchNOrderTest, NoDuplicatesInResults) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        for (int i = 1; i <= 10; ++i)
+            db.insert((uint64_t)i, { (float)i, (float)i, (float)i });
+
+        auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 10);
+        std::unordered_set<int> seen;
+        for (int id : results) {
+            EXPECT_EQ(seen.count(id), 0u) << "Duplicate ID " << id << " in results";
+            seen.insert(id);
+        }
+    }
+}
+
+TEST_F(SearchNOrderTest, ResultCountCappedAtLiveVectors) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        db.insert(2, { 2.0f, 0.0f, 0.0f });
+        db.insert(3, { 3.0f, 0.0f, 0.0f });
+        db.remove(2);
+
+        auto results = db.search_N({ 0.0f, 0.0f, 0.0f }, 10);
+        EXPECT_LE(results.size(), 2u);
+        for (int id : results)
+            EXPECT_NE(id, 2) << "Deleted ID 2 must not appear in results";
+    }
+}
+
+
+// =============================================================================
+// 7. CAPACITY BOUNDARY
+// =============================================================================
+class CapacityTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_capacity"); DbFixture::SetUp(); }
+};
+
+TEST_F(CapacityTest, FillToCapacityExact) {
+    {
+        const int CAP = 50;
+        CoreEngine::RedBoxVector db(db_file, 3, CAP);
+        for (int i = 0; i < CAP; ++i)
+            db.insert((uint64_t)(i + 1), { (float)i, 0.0f, 0.0f });
+        EXPECT_EQ(db.search({ (float)(CAP - 1), 0.0f, 0.0f }), CAP);
+    }
+}
+
+TEST_F(CapacityTest, ExceedCapacityDoesNotCorrupt) {
+    {
+        const int CAP = 10;
+        CoreEngine::RedBoxVector db(db_file, 3, CAP);
+        for (int i = 0; i < CAP; ++i)
+            db.insert((uint64_t)(i + 1), { (float)i, 0.0f, 0.0f });
+
+        // One over capacity — engine catches and logs, must not corrupt.
+        try {
+            db.insert(9999, { 9999.0f, 0.0f, 0.0f });
+        } catch (const std::exception&) {}
+
+        EXPECT_EQ(db.search({ 0.0f, 0.0f, 0.0f }), 1);
+    }
+}
+
+
+// =============================================================================
+// 8. PERSISTENCE STRESS
+// =============================================================================
+class PersistenceStressTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_persist_stress"); DbFixture::SetUp(); }
+};
+
+TEST_F(PersistenceStressTest, MultipleOpenCloseRoundTrips) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 500);
+        for (int i = 1; i <= 10; ++i)
+            db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+    }
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 500);
+        for (int i = 1; i <= 10; ++i)
+            EXPECT_EQ(db.search({ (float)i, 0.0f, 0.0f }), i)
+                << "Round-2 open: ID " << i << " not found";
+        for (int i = 11; i <= 20; ++i)
+            db.insert((uint64_t)i, { (float)i, 0.0f, 0.0f });
+    }
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 500);
+        for (int i = 1; i <= 20; ++i)
+            EXPECT_EQ(db.search({ (float)i, 0.0f, 0.0f }), i)
+                << "Round-3 open: ID " << i << " not found";
+    }
+}
+
+TEST_F(PersistenceStressTest, DeletionsSurviveMultipleReloads) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f, 0.0f, 0.0f });
+        db.insert(2, { 2.0f, 0.0f, 0.0f });
+        db.remove(1);
+    }
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        EXPECT_FALSE(db.remove(1)) << "Cycle " << cycle << ": ID 1 should already be deleted";
+        EXPECT_EQ(db.search({ 2.0f, 0.0f, 0.0f }), 2)
+            << "Cycle " << cycle << ": ID 2 must still be alive";
+    }
+}
+
+TEST_F(PersistenceStressTest, UpdatesAndDeletesComboSurvivesReload) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1.0f,  0.0f, 0.0f });
+        db.insert(2, { 2.0f,  0.0f, 0.0f });
+        db.insert(3, { 3.0f,  0.0f, 0.0f });
+        db.update(2, { 20.0f, 0.0f, 0.0f });
+        db.remove(3);
+    }
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        EXPECT_EQ(db.search({ 1.0f,  0.0f, 0.0f }), 1);
+        EXPECT_EQ(db.search({ 20.0f, 0.0f, 0.0f }), 2);
+        EXPECT_FALSE(db.remove(3));
+    }
+}
+
+
+// =============================================================================
+// 9. NEAREST-NEIGHBOR REGRESSION SUITE
+//    Mathematically exact cases — must pass regardless of index type.
+// =============================================================================
+class NNRegressionTest : public DbFixture {
+protected:
+    void SetUp() override { init("test_nn_regression"); DbFixture::SetUp(); }
+};
+
+TEST_F(NNRegressionTest, AxisAlignedBasis) {
+    {
+        const int DIM = 8;
+        CoreEngine::RedBoxVector db(db_file, DIM, 100);
+        for (int axis = 0; axis < DIM; ++axis) {
+            std::vector<float> v(DIM, 0.0f);
+            v[axis] = 1.0f;
+            db.insert((uint64_t)(axis + 1), v);
+        }
+        for (int axis = 0; axis < DIM; ++axis) {
+            std::vector<float> q(DIM, 0.01f);
+            q[axis] = 0.95f;
+            EXPECT_EQ(db.search(q), axis + 1)
+                << "Axis " << axis << ": wrong nearest neighbor";
+        }
+    }
+}
+
+TEST_F(NNRegressionTest, NegativeCoordinates) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { -10.0f, -10.0f, -10.0f });
+        db.insert(2, {  10.0f,  10.0f,  10.0f });
+        EXPECT_EQ(db.search({ -9.0f, -9.0f, -9.0f }), 1);
+        EXPECT_EQ(db.search({  9.0f,  9.0f,  9.0f }), 2);
+    }
+}
+
+TEST_F(NNRegressionTest, LargeCoordinateValues) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(1, { 1e3f, 1e3f, 1e3f });
+        db.insert(2, { 2e3f, 2e3f, 2e3f });
+        EXPECT_EQ(db.search({ 1.1e3f, 1.1e3f, 1.1e3f }), 1);
+        EXPECT_EQ(db.search({ 1.9e3f, 1.9e3f, 1.9e3f }), 2);
+    }
+}
+
+TEST_F(NNRegressionTest, ZeroVector) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 4, 100);
+        db.insert(1, { 0.0f, 0.0f, 0.0f, 0.0f });
+        db.insert(2, { 1.0f, 1.0f, 1.0f, 1.0f });
+        EXPECT_EQ(db.search({ 0.0f, 0.0f, 0.0f, 0.0f }), 1);
+        EXPECT_EQ(db.search({ 0.1f, 0.1f, 0.1f, 0.1f }), 1);
+    }
+}
+
+TEST_F(NNRegressionTest, IdenticalVectorsDifferentIds) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 3, 100);
+        db.insert(10, { 5.0f, 5.0f, 5.0f });
+        db.insert(20, { 5.0f, 5.0f, 5.0f });
+        int result = db.search({ 5.0f, 5.0f, 5.0f });
+        EXPECT_TRUE(result == 10 || result == 20)
+            << "Must return one of the two identical vectors, got " << result;
+    }
+}
+
+TEST_F(NNRegressionTest, SearchNCountWithEquidistantVectors) {
+    {
+        CoreEngine::RedBoxVector db(db_file, 2, 100);
+        const int COUNT = 8;
+        for (int i = 0; i < COUNT; ++i) {
+            float angle = (float)i * 3.14159265f / (float)COUNT;
+            db.insert((uint64_t)(i + 1), { std::cos(angle), std::sin(angle) });
+        }
+        auto results = db.search_N({ 0.0f, 0.0f }, 5);
+        EXPECT_EQ(results.size(), 5u);
+        std::set<int> valid_ids;
+        for (int i = 1; i <= COUNT; ++i) valid_ids.insert(i);
+        for (int id : results)
+            EXPECT_GT(valid_ids.count(id), 0u) << "Invalid ID " << id << " in results";
+    }
+}
