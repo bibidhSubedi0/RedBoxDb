@@ -8,23 +8,31 @@ on:
 
 jobs:
   build-and-verify:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
     # 1. Checkout Code
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     # 2. Setup Python (for Client verification scripts)
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
-    
+
     - name: Install Python Dependencies
       run: pip install numpy
 
     # 3. Configure CMake
-    - name: Configure CMake
+    - name: Configure CMake (Windows)
+      if: runner.os == 'Windows'
+      run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+
+    - name: Configure CMake (Linux)
+      if: runner.os == 'Linux'
       run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
 
     # 4. Build the Server & Tests
@@ -32,33 +40,94 @@ jobs:
       run: cmake --build build
 
     # 5. Run C++ Unit Tests (GTest)
-    - name: Run C++ Unit Tests
+    - name: Run C++ Unit Tests (Windows)
+      if: runner.os == 'Windows'
       run: |
         cd build/tests
         if (Test-Path RedBoxDbTests.exe) { .\RedBoxDbTests.exe }
 
-    # 6. Run Python Integration Tests (The Real Test)
-    - name: Run System Verification
+    - name: Run C++ Unit Tests (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        cd build/tests
+        ./RedBoxDbTests
+
+    # 6. Run Python Integration Tests
+    - name: Run System Verification (Windows)
+      if: runner.os == 'Windows'
       shell: powershell
       run: |
         echo "Starting RedBoxServer..."
         $server = Start-Process -FilePath ".\build\src\RedBoxServer.exe" -PassThru
-        
-        echo "Waiting 3 seconds for startup..."
-        Start-Sleep -Seconds 3
 
-        echo "Running Python Validation..."
-        $env:PYTHONPATH = "$PWD/Client"
-        
-        python Client/validation.py
-        
-        $testResult = $LASTEXITCODE
-        
-        echo "Stopping Server..."
-        Stop-Process -Id $server.Id -Force
-        
-        if ($testResult -ne 0) { 
-            echo " Verification Failed!"
-            exit $testResult 
+        echo "Waiting for server to be ready..."
+        $ready = $false
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Seconds 1
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $tcp.Connect("127.0.0.1", 8080)
+                $tcp.Close()
+                $ready = $true
+                break
+            } catch {}
         }
+
+        if (-not $ready) {
+            echo "Server failed to start within 10 seconds!"
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
+
+        echo "Server ready. Running Python Validation..."
+        $env:PYTHONPATH = "$PWD/Client"
+
+        python Client/validation.py
+        $testResult = $LASTEXITCODE
+
+        echo "Stopping Server..."
+        Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+
+        if ($testResult -ne 0) {
+            echo " Verification Failed!"
+            exit $testResult
+        }
+        echo " Verification Passed!"
+
+    - name: Run System Verification (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        echo "Starting RedBoxServer..."
+        ./build/src/RedBoxServer &
+        SERVER_PID=$!
+
+        echo "Waiting for server to be ready..."
+        ready=false
+        for i in $(seq 1 10); do
+            sleep 1
+            if nc -z 127.0.0.1 8080 2>/dev/null; then
+                ready=true
+                break
+            fi
+        done
+
+        if [ "$ready" = false ]; then
+            echo "Server failed to start within 10 seconds!"
+            kill $SERVER_PID 2>/dev/null || true
+            exit 1
+        fi
+
+        echo "Server ready. Running Python Validation..."
+        PYTHONPATH="$PWD/Client" python3 Client/validation.py
+        testResult=$?
+
+        echo "Stopping Server..."
+        kill $SERVER_PID 2>/dev/null || true
+        wait $SERVER_PID 2>/dev/null || true
+
+        if [ $testResult -ne 0 ]; then
+            echo " Verification Failed!"
+            exit $testResult
+        fi
         echo " Verification Passed!"
