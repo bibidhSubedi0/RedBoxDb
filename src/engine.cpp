@@ -10,6 +10,7 @@
 #include "redboxdb/cpu_features.hpp"
 #include "redboxdb/distance.hpp"
 #include "redboxdb/cluster_manager.hpp"
+#include "redboxdb/hnsw_manager.hpp"
 #include "redboxdb/logger.hpp"
 #include <cstring>
 
@@ -53,10 +54,45 @@ namespace CoreEngine {
                   + " | Probes: "   + std::to_string(static_cast<int>(_manager->get_num_probes())));
     }
 
+    RedBoxVector::RedBoxVector(std::string file_name, size_t dim, int capacity,
+                               uint8_t hnsw_M, uint16_t hnsw_ef_construction)
+        : dimension(dim), file_name(file_name), tombstone_file(file_name + ".del"),
+          hnsw_rng(std::random_device{}())
+    {
+        _manager = std::make_unique<StorageManager::Manager>(
+            file_name, dim, capacity, 100, 1,
+            IndexType::HNSW, hnsw_M, hnsw_ef_construction);
+        load_tombstones();
+
+        use_avx2    = Platform::has_avx2();
+        num_threads = std::max(1u, std::thread::hardware_concurrency());
+
+        int existing = static_cast<int>(_manager->get_count());
+        deleted_flags.resize(existing, 0);
+
+        for (int i = 0; i < existing; ++i) {
+            uint64_t id = _manager->get_id(i);
+            if (deleted_ids.count(id)) {
+                deleted_flags[i] = 1;
+            } else {
+                id_to_index[id] = i;
+            }
+        }
+
+        Log::info("HNSW initialized | AVX2: " + std::string(use_avx2 ? "enabled" : "disabled")
+                  + " | M=" + std::to_string((int)hnsw_M)
+                  + " | ef_construction=" + std::to_string((int)hnsw_ef_construction)
+                  + " | ef_search=" + std::to_string((int)_manager->get_hnsw_ef_search())
+                  + " | Nodes: " + std::to_string(existing));
+    }
+
     // -----------------------------------------------------------------------
     void RedBoxVector::insert(uint64_t id, const std::vector<float>& vec) {
         std::unique_lock<std::shared_mutex> lk(rw_mutex);
 
+        bool is_hnsw = (_manager->get_index_type() == IndexType::HNSW);
+
+        // Re-insert after delete
         if (deleted_ids.count(id)) {
             deleted_ids.erase(id);
 
@@ -73,19 +109,29 @@ namespace CoreEngine {
                 float* dst = _manager->get_float_ptr_mut(old_slot);
                 std::memcpy(dst, vec.data(), dimension * sizeof(float));
 
-                uint16_t k = _manager->get_num_clusters();
-                uint16_t c = 0;
-                if (_manager->is_cluster_initialized()) {
-                    c = ClusterManager::find_nearest_centroid(
-                        vec.data(), _manager->get_centroid_block(),
-                        k, dimension, use_avx2);
-                    ClusterManager::update_centroid(
-                        _manager->get_centroid_block(),
-                        _manager->get_cluster_count_block(),
-                        c, vec.data(), dimension);
-                    cluster_index[c].push_back(old_slot);
+                if (!is_hnsw) {
+                    uint16_t k = _manager->get_num_clusters();
+                    uint16_t c = 0;
+                    if (_manager->is_cluster_initialized()) {
+                        c = ClusterManager::find_nearest_centroid(
+                            vec.data(), _manager->get_centroid_block(),
+                            k, dimension, use_avx2);
+                        ClusterManager::update_centroid(
+                            _manager->get_centroid_block(),
+                            _manager->get_cluster_count_block(),
+                            c, vec.data(), dimension);
+                        cluster_index[c].push_back(old_slot);
+                    }
+                    _manager->set_cluster(old_slot, c);
                 }
-                _manager->set_cluster(old_slot, c);
+                // HNSW: re-insert into graph
+                else {
+                    HnswManager::hnsw_insert(
+                        static_cast<uint32_t>(old_slot), vec.data(),
+                        _manager->get_header(), _manager->get_float_ptr_mut(0),
+                        _manager->get_hnsw_edge_block(), _manager->get_hnsw_level_block(),
+                        dimension, use_avx2, deleted_flags.data(), hnsw_rng);
+                }
 
                 deleted_flags[old_slot] = 0;
                 id_to_index[id] = old_slot;
@@ -93,47 +139,59 @@ namespace CoreEngine {
             }
         }
 
+        // Fresh insert
         try {
-            uint16_t k    = _manager->get_num_clusters();
-            size_t   slot = _manager->get_count();
+            size_t slot = _manager->get_count();
             deleted_flags.push_back(0);
-            uint16_t c    = 0;
 
-            if (!_manager->is_cluster_initialized()) {
-                c = 0;
-                _manager->add_vector(id, vec, c);
+            if (!is_hnsw) {
+                uint16_t k = _manager->get_num_clusters();
+                uint16_t c = 0;
 
-                if ((uint64_t)(slot + 1) >= KMEANS_INIT_THRESHOLD) {
-                    ClusterManager::kmeans_plus_plus_init(
+                if (!_manager->is_cluster_initialized()) {
+                    c = 0;
+                    _manager->add_vector(id, vec, c);
+
+                    if ((uint64_t)(slot + 1) >= KMEANS_INIT_THRESHOLD) {
+                        ClusterManager::kmeans_plus_plus_init(
+                            _manager->get_centroid_block(),
+                            _manager->get_cluster_count_block(),
+                            _manager->get_cluster_block(),
+                            _manager->get_float_ptr(0),
+                            k, slot+1, dimension, use_avx2);
+                        _manager->set_cluster_initialized();
+
+                        for (auto& v : cluster_index) v.clear();
+                        for (int i = 0; i <= (int)slot; ++i) {
+                            if (!deleted_flags[i]) {
+                                uint16_t ci = _manager->get_cluster(i);
+                                if (ci < k) cluster_index[ci].push_back(i);
+                            }
+                        }
+
+                        Log::info("K-Means++ initialized with K=" + std::to_string((int)k));
+                    }
+                } else {
+                    c = ClusterManager::find_nearest_centroid(
+                        vec.data(),
+                        _manager->get_centroid_block(),
+                        k, dimension, use_avx2);
+                    _manager->add_vector(id, vec, c);
+                    ClusterManager::update_centroid(
                         _manager->get_centroid_block(),
                         _manager->get_cluster_count_block(),
-                        _manager->get_cluster_block(),
-                        _manager->get_float_ptr(0),
-                        k, slot+1, dimension, use_avx2);
-                    _manager->set_cluster_initialized();
+                        c, vec.data(), dimension);
 
-                    for (auto& v : cluster_index) v.clear();
-                    for (int i = 0; i <= (int)slot; ++i) {
-                        if (!deleted_flags[i]) {
-                            uint16_t ci = _manager->get_cluster(i);
-                            if (ci < k) cluster_index[ci].push_back(i);
-                        }
-                    }
-
-                    Log::info("K-Means++ initialized with K=" + std::to_string((int)k));
+                    cluster_index[c].push_back(static_cast<int>(slot));
                 }
             } else {
-                c = ClusterManager::find_nearest_centroid(
-                    vec.data(),
-                    _manager->get_centroid_block(),
-                    k, dimension, use_avx2);
-                _manager->add_vector(id, vec, c);
-                ClusterManager::update_centroid(
-                    _manager->get_centroid_block(),
-                    _manager->get_cluster_count_block(),
-                    c, vec.data(), dimension);
-
-                cluster_index[c].push_back(static_cast<int>(slot));
+                // HNSW insert
+                _manager->add_vector(id, vec, 0);
+                HnswManager::hnsw_insert(
+                    static_cast<uint32_t>(slot), vec.data(),
+                    _manager->get_header(), _manager->get_float_ptr_mut(0),
+                    _manager->get_hnsw_edge_block(), _manager->get_hnsw_level_block(),
+                    dimension, use_avx2, deleted_flags.data(), hnsw_rng);
             }
 
             id_to_index[id] = slot;
@@ -170,6 +228,16 @@ namespace CoreEngine {
         int count = static_cast<int>(_manager->get_count());
         if (count == 0) return -1;
 
+        if (_manager->get_index_type() == IndexType::HNSW) {
+            uint32_t best_slot = HnswManager::hnsw_search_1(
+                query.data(), _manager->get_header(),
+                _manager->get_float_ptr(0), _manager->get_hnsw_edge_block(),
+                dimension, use_avx2, deleted_flags.data());
+            if (best_slot == HnswManager::EMPTY) return -1;
+            return static_cast<int>(_manager->get_id(best_slot));
+        }
+
+        // IVF path
         uint16_t k         = _manager->get_num_clusters();
         uint8_t num_probes = _manager->get_num_probes();
         bool initialized   = _manager->is_cluster_initialized();
@@ -226,6 +294,23 @@ namespace CoreEngine {
         int count = static_cast<int>(_manager->get_count());
         if (count == 0) return {};
 
+        if (_manager->get_index_type() == IndexType::HNSW) {
+            std::vector<std::pair<float, uint32_t>> hnsw_results;
+            HnswManager::hnsw_search(
+                query.data(), N, _manager->get_header(),
+                _manager->get_float_ptr(0), _manager->get_hnsw_edge_block(),
+                dimension, use_avx2, deleted_flags.data(), hnsw_results);
+
+            std::vector<int> result;
+            int limit = std::min(N, (int)hnsw_results.size());
+            result.reserve(limit);
+            for (int i = 0; i < limit; ++i) {
+                result.push_back(static_cast<int>(_manager->get_id(hnsw_results[i].second)));
+            }
+            return result;
+        }
+
+        // IVF path
         uint16_t k         = _manager->get_num_clusters();
         uint8_t num_probes = _manager->get_num_probes();
         bool initialized   = _manager->is_cluster_initialized();
@@ -373,6 +458,10 @@ namespace CoreEngine {
         _manager->set_num_probes(p);
     }
 
+    void RedBoxVector::set_hnsw_ef_search(uint16_t ef) {
+        _manager->set_hnsw_ef_search(ef);
+    }
+
 } 
 
 
@@ -381,28 +470,29 @@ namespace CoreEngine {
 // ============================================================
 namespace StorageManager {
 
-    static void setup_pointers(
-        void*     map_base,
-        uint64_t  capacity,
-        uint16_t  k,
-        uint64_t  dim,
-        CoreEngine::SpecificMetadata*& header,
-        float*&    centroid_block,
-        uint64_t*& cluster_count_block,
-        uint16_t*& cluster_block,
-        uint64_t*& id_block,
-        float*&    float_block)
+    static size_t calc_required_size(
+        uint64_t dimensions, int initial_capacity, uint16_t num_clusters,
+        CoreEngine::IndexType idx_type, uint8_t hnsw_M)
     {
-        header              = (CoreEngine::SpecificMetadata*)map_base;
-        centroid_block      = (float*)((char*)map_base + sizeof(CoreEngine::SpecificMetadata));
-        cluster_count_block = (uint64_t*)(centroid_block + (size_t)k * dim);
-        cluster_block       = (uint16_t*)(cluster_count_block + k);
-        id_block            = (uint64_t*)(cluster_block + capacity);
-        float_block         = (float*)(id_block + capacity);
+        size_t base = sizeof(CoreEngine::SpecificMetadata)
+                    + (size_t)initial_capacity * sizeof(uint64_t)    // id_block
+                    + (size_t)initial_capacity * dimensions * sizeof(float); // float_block
+
+        if (idx_type == CoreEngine::IndexType::IVF) {
+            base += (size_t)num_clusters * dimensions * sizeof(float)  // centroids
+                  + (size_t)num_clusters * sizeof(uint64_t)           // cluster counts
+                  + (size_t)initial_capacity * sizeof(uint16_t);      // cluster block
+        } else {
+            // HNSW: level_block + edge_block after float_block
+            base += (size_t)initial_capacity * sizeof(uint8_t)                // level_block
+                  + (size_t)initial_capacity * HnswManager::edges_per_node(hnsw_M) * sizeof(uint32_t);
+        }
+        return base;
     }
 
     Manager::Manager(const std::string& db_file, uint64_t dimensions,
-                     int initial_capacity, uint16_t num_clusters, uint8_t num_probes)
+                     int initial_capacity, uint16_t num_clusters, uint8_t num_probes,
+                     CoreEngine::IndexType index_type, uint8_t hnsw_M, uint16_t hnsw_ef_construction)
         : allocated_size(initial_capacity), filename(db_file),
 #ifdef _WIN32
           hFile(NULL), hMapFile(NULL),
@@ -411,16 +501,11 @@ namespace StorageManager {
 #endif
           map_base(nullptr),
           header(nullptr), centroid_block(nullptr), cluster_count_block(nullptr),
-          cluster_block(nullptr), id_block(nullptr), float_block(nullptr)
+          cluster_block(nullptr), id_block(nullptr), float_block(nullptr),
+          hnsw_level_block(nullptr), hnsw_edge_block(nullptr)
     {
-        size_t centroid_bytes      = (size_t)num_clusters * dimensions * sizeof(float);
-        size_t cluster_count_bytes = (size_t)num_clusters * sizeof(uint64_t);
-        size_t cluster_block_bytes = (size_t)initial_capacity * sizeof(uint16_t);
-        size_t id_block_bytes      = (size_t)initial_capacity * sizeof(uint64_t);
-        size_t float_block_bytes   = (size_t)initial_capacity * dimensions * sizeof(float);
-        size_t required_size       = sizeof(CoreEngine::SpecificMetadata)
-                                   + centroid_bytes + cluster_count_bytes
-                                   + cluster_block_bytes + id_block_bytes + float_block_bytes;
+        bool is_hnsw = (index_type == CoreEngine::IndexType::HNSW);
+        size_t required_size = calc_required_size(dimensions, initial_capacity, num_clusters, index_type, hnsw_M);
 
 #ifdef _WIN32
         hFile = CreateFileA(filename.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
@@ -460,11 +545,31 @@ namespace StorageManager {
         if (map_base == MAP_FAILED) { close(fd); throw std::runtime_error("mmap failed"); }
 #endif
 
-        setup_pointers(map_base, (uint64_t)initial_capacity, num_clusters, dimensions,
-                       header, centroid_block, cluster_count_block,
-                       cluster_block, id_block, float_block);
+        // Setup pointers based on index type
+        header = (CoreEngine::SpecificMetadata*)map_base;
+
+        if (!is_hnsw) {
+            // IVF layout: [Header][centroids][cluster_counts][cluster_block][id_block][float_block]
+            centroid_block      = (float*)((char*)map_base + sizeof(CoreEngine::SpecificMetadata));
+            cluster_count_block = (uint64_t*)(centroid_block + (size_t)num_clusters * dimensions);
+            cluster_block       = (uint16_t*)(cluster_count_block + num_clusters);
+            id_block            = (uint64_t*)(cluster_block + initial_capacity);
+            float_block         = (float*)(id_block + initial_capacity);
+            hnsw_level_block    = nullptr;
+            hnsw_edge_block     = nullptr;
+        } else {
+            // HNSW layout: [Header][id_block][float_block][level_block][edge_block]
+            centroid_block      = nullptr;
+            cluster_count_block = nullptr;
+            cluster_block       = nullptr;
+            id_block            = (uint64_t*)((char*)map_base + sizeof(CoreEngine::SpecificMetadata));
+            float_block         = (float*)(id_block + initial_capacity);
+            hnsw_level_block    = (uint8_t*)(float_block + (size_t)initial_capacity * dimensions);
+            hnsw_edge_block     = (uint32_t*)(hnsw_level_block + initial_capacity);
+        }
 
         if (current_size == 0) {
+            std::memset(header, 0, sizeof(CoreEngine::SpecificMetadata));
             header->vector_count   = 0;
             header->max_capacity   = initial_capacity;
             header->dimensions     = dimensions;
@@ -474,6 +579,21 @@ namespace StorageManager {
             header->num_clusters   = num_clusters;
             header->is_initialized = 0;
             header->num_probes     = num_probes;
+            header->index_type     = static_cast<uint8_t>(index_type);
+
+            if (is_hnsw) {
+                header->hnsw_M               = hnsw_M;
+                header->hnsw_ef_construction  = hnsw_ef_construction;
+                header->hnsw_ef_search        = 256;
+                header->hnsw_max_level        = 0;
+                header->hnsw_entry_point      = HnswManager::EMPTY;
+                header->hnsw_graph_version    = 0;
+
+                // Initialize all edge slots to EMPTY
+                size_t total_edges = (size_t)initial_capacity * HnswManager::edges_per_node(hnsw_M);
+                for (size_t i = 0; i < total_edges; ++i)
+                    hnsw_edge_block[i] = HnswManager::EMPTY;
+            }
         }
         else {
             if (header->version != CoreEngine::SpecificMetadata::CURRENT_VERSION) {
@@ -506,12 +626,21 @@ namespace StorageManager {
 #ifdef _WIN32
             FlushViewOfFile(map_base, 0); UnmapViewOfFile(map_base);
 #else
-            size_t total = sizeof(CoreEngine::SpecificMetadata)
-                         + (size_t)header->num_clusters * header->dimensions * sizeof(float)
-                         + (size_t)header->num_clusters * sizeof(uint64_t)
-                         + (size_t)header->max_capacity * sizeof(uint16_t)
-                         + (size_t)header->max_capacity * sizeof(uint64_t)
-                         + (size_t)header->max_capacity * header->dimensions * sizeof(float);
+            size_t total;
+            if (header->index_type == static_cast<uint8_t>(CoreEngine::IndexType::HNSW)) {
+                total = sizeof(CoreEngine::SpecificMetadata)
+                      + (size_t)header->max_capacity * sizeof(uint64_t)
+                      + (size_t)header->max_capacity * header->dimensions * sizeof(float)
+                      + (size_t)header->max_capacity * sizeof(uint8_t)
+                      + (size_t)header->max_capacity * HnswManager::edges_per_node(header->hnsw_M) * sizeof(uint32_t);
+            } else {
+                total = sizeof(CoreEngine::SpecificMetadata)
+                      + (size_t)header->num_clusters * header->dimensions * sizeof(float)
+                      + (size_t)header->num_clusters * sizeof(uint64_t)
+                      + (size_t)header->max_capacity * sizeof(uint16_t)
+                      + (size_t)header->max_capacity * sizeof(uint64_t)
+                      + (size_t)header->max_capacity * header->dimensions * sizeof(float);
+            }
             msync(map_base, total, MS_SYNC);
             munmap(map_base, total);
 #endif
@@ -531,10 +660,14 @@ namespace StorageManager {
             throw std::runtime_error("Database full");
 
         size_t slot = header->vector_count;
-        cluster_block[slot] = cluster;
         id_block[slot]      = id;
         float* dst = float_block + slot * header->dimensions;
         std::memcpy(dst, vec.data(), header->dimensions * sizeof(float));
+
+        if (header->index_type == static_cast<uint8_t>(CoreEngine::IndexType::IVF)) {
+            cluster_block[slot] = cluster;
+        }
+
         header->vector_count++;
     }
 

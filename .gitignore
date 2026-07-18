@@ -378,4 +378,4 @@ venv/
 
 *.db
 *.del
-build_mingw
+build_mingw.vscode/

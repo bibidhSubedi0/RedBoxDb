@@ -20,6 +20,8 @@ class RedBoxClient:
     CMD_SEARCH_N    = 7
     CMD_DROP_DB     = 8
     CMD_SET_PROBES  = 9
+    CMD_CREATE_HNSW_DB = 10
+    CMD_SET_HNSW_EF = 11
 
     def __init__(self, host: str = '127.0.0.1', port: int = 8080, db_name: str = 'default', dim: int = 128, capacity: int=100_000):
         self.host    = host
@@ -123,6 +125,40 @@ class RedBoxClient:
         header = struct.pack('<BI', self.CMD_SET_PROBES, probes)
         self.sock.sendall(header)
         return self.sock.recv(1) == b'1'
+
+    def set_hnsw_ef(self, ef: int) -> bool:
+        """Set the HNSW ef_search parameter."""
+        header = struct.pack('<BI', self.CMD_SET_HNSW_EF, ef)
+        self.sock.sendall(header)
+        return self.sock.recv(1) == b'1'
+
+    @classmethod
+    def create_hnsw(cls, host: str = '127.0.0.1', port: int = 8080,
+                    db_name: str = 'default', dim: int = 128,
+                    capacity: int = 100_000,
+                    hnsw_M: int = 16, hnsw_ef_construction: int = 200):
+        """Create a new client connected to an HNSW database."""
+        client = cls.__new__(cls)
+        client.host = host
+        client.port = port
+        client.dim = dim
+        client.db_name = db_name
+        client.capacity = capacity
+        client.sock = None
+
+        client._connect()
+        client._handshake_hnsw(db_name, dim, capacity, hnsw_M, hnsw_ef_construction)
+        return client
+
+    def _handshake_hnsw(self, name: str, dim: int, capacity: int, hnsw_M: int, hnsw_ef_construction: int):
+        name_bytes = name.encode('utf-8')
+        header  = struct.pack('<BI', self.CMD_CREATE_HNSW_DB, len(name_bytes))
+        payload = name_bytes + struct.pack('<I', dim) + struct.pack('<I', capacity)
+        payload += struct.pack('<B', hnsw_M) + struct.pack('<H', hnsw_ef_construction)
+        self.sock.sendall(header + payload)
+        ack = self.sock.recv(1)
+        if not ack:
+            raise RuntimeError("Server rejected HNSW handshake or disconnected.")
 
     # ------------------------------------------------------------------
 

@@ -31,7 +31,7 @@ namespace StorageManager {
 
         CoreEngine::SpecificMetadata* header;
 
-        // Clustered columnar layout (version 2):
+        // IVF layout:
         //   [ Header (128 bytes)                        ]
         //   [ centroid_block:      K x dim x 4 bytes    ]
         //   [ cluster_count_block: K x 8 bytes          ]
@@ -44,11 +44,20 @@ namespace StorageManager {
         uint64_t* id_block;
         float*    float_block;
 
+        // HNSW layout (appended after float_block):
+        //   [ level_block: capacity x 1 byte            ]
+        //   [ edge_block:  capacity x edges_per_node x 4 bytes ]
+        uint8_t*  hnsw_level_block;
+        uint32_t* hnsw_edge_block;
+
     public:
-        Manager(const std::string& db_file, uint64_t dimensions, int initial_capacity, uint16_t num_clusters = 100, uint8_t num_probes = 1);
+        Manager(const std::string& db_file, uint64_t dimensions, int initial_capacity,
+                uint16_t num_clusters = 100, uint8_t num_probes = 1,
+                CoreEngine::IndexType index_type = CoreEngine::IndexType::IVF,
+                uint8_t hnsw_M = 16, uint16_t hnsw_ef_construction = 200);
         ~Manager();
 
-        void             add_vector(uint64_t id, const std::vector<float>& vec, uint16_t cluster);
+        void             add_vector(uint64_t id, const std::vector<float>& vec, uint16_t cluster = 0);
         const float*     get_float_ptr(int index) const;
         float*           get_float_ptr_mut(int index);
         uint64_t         get_id(int index) const;
@@ -57,6 +66,7 @@ namespace StorageManager {
         uint64_t         get_count() const;
         uint64_t         next_id();
 
+        // IVF accessors
         float*       get_centroid_block()       { return centroid_block; }
         uint64_t*    get_cluster_count_block()  { return cluster_count_block; }
         uint16_t*    get_cluster_block()        { return cluster_block; }
@@ -66,6 +76,17 @@ namespace StorageManager {
         uint16_t get_num_clusters() const        { return header->num_clusters; }
         uint8_t get_num_probes()   const        { return header->num_probes; }
         void    set_num_probes(uint8_t p)       { header->num_probes = p; }
+
+        // HNSW accessors
+        uint8_t*  get_hnsw_level_block()       { return hnsw_level_block; }
+        uint32_t* get_hnsw_edge_block()        { return hnsw_edge_block; }
+        CoreEngine::IndexType get_index_type() const {
+            return static_cast<CoreEngine::IndexType>(header->index_type);
+        }
+        void set_hnsw_ef_search(uint16_t ef)  { header->hnsw_ef_search = ef; }
+        uint16_t get_hnsw_ef_search() const    { return header->hnsw_ef_search; }
+
+        CoreEngine::SpecificMetadata* get_header() { return header; }
     };
 }
 

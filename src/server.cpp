@@ -17,6 +17,7 @@
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
+    #include <netinet/tcp.h>
     #include <arpa/inet.h>
     #include <unistd.h>
     #include <signal.h>
@@ -37,6 +38,8 @@ const uint8_t CMD_INSERT_AUTO = 6;
 const uint8_t CMD_SEARCH_N = 7;
 const uint8_t CMD_DROP_DB  = 8;
 const uint8_t CMD_SET_PROBES = 9;
+const uint8_t CMD_CREATE_HNSW_DB = 10;
+const uint8_t CMD_SET_HNSW_EF = 11;
 
 
 using DbCatalog = std::unordered_map<std::string, std::unique_ptr<CoreEngine::RedBoxVector>>;
@@ -132,7 +135,43 @@ void handle_client(SOCKET client_socket, SharedState& state) {
             continue;
         }
 
-        if (!active_db) break; // No DB selected � drop the client
+        // --- HANDSHAKE / CREATE HNSW DB ---
+        if (cmd == CMD_CREATE_HNSW_DB) {
+            uint32_t name_len = meta_data;
+            std::string db_name(name_len, ' ');
+            if (!recv_all(&db_name[0], (int)name_len)) break;
+
+            uint32_t requested_dim = 0;
+            if (!recv_all((char*)&requested_dim, 4)) break;
+            uint32_t requested_capacity = 0;
+            if (!recv_all((char*)&requested_capacity, 4)) break;
+            uint8_t hnsw_M = 16;
+            if (!recv_all((char*)&hnsw_M, 1)) break;
+            uint16_t hnsw_ef_construction = 200;
+            if (!recv_all((char*)&hnsw_ef_construction, 2)) break;
+
+            std::cout << "[SERVER] Create HNSW DB: " << db_name
+                << " (Dim=" << requested_dim << " M=" << (int)hnsw_M
+                << " ef_c=" << hnsw_ef_construction << ")\n";
+
+            {
+                std::lock_guard<std::mutex> lock(state.catalog_mutex);
+                if (state.catalog.find(db_name) == state.catalog.end()) {
+                    std::string filename = db_name + ".db";
+                    state.catalog[db_name] = std::make_unique<CoreEngine::RedBoxVector>(
+                        filename, requested_dim, (int)requested_capacity,
+                        hnsw_M, hnsw_ef_construction);
+                    state.db_mutexes[db_name] = std::make_unique<std::mutex>();
+                }
+                active_db = state.catalog[db_name].get();
+                active_mtx = state.db_mutexes[db_name].get();
+            }
+
+            if (!send_all("1", 1)) break;
+            continue;
+        }
+
+        if (!active_db) break;
 
         int current_dim = active_db->get_dim();
         int vec_byte_size = current_dim * sizeof(float);
@@ -226,6 +265,15 @@ void handle_client(SOCKET client_socket, SharedState& state) {
             char resp = '1';
             if (!send_all(&resp, 1)) break;
         }
+        else if (cmd == CMD_SET_HNSW_EF) {
+            uint16_t new_ef = static_cast<uint16_t>(meta_data);
+            if (active_db) {
+                active_db->set_hnsw_ef_search(new_ef);
+                std::cout << "[SERVER] Set hnsw_ef_search = " << (int)new_ef << "\n";
+            }
+            char resp = '1';
+            if (!send_all(&resp, 1)) break;
+        }
     }
 
     closesocket(client_socket);
@@ -262,6 +310,10 @@ int main() {
     while (true) {
         SOCKET client_socket = accept(server_socket, nullptr, nullptr);
         if (client_socket == INVALID_SOCKET) continue;
+
+        // Disable Nagle on the accepted socket to avoid ~40ms delayed-ACK latency
+        int flag = 1;
+        setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, (char*)&flag, sizeof(flag));
 
         // Each client gets its own detached thread.
         // The thread owns the socket and closes it when done.

@@ -14,6 +14,9 @@ VECTORS    = 100_000
 DIM        = 128
 QUERIES    = 1_000
 SEED       = 42
+HNSW_M     = 16
+HNSW_EF_C  = 200
+HNSW_EF_S  = 256
 
 rng = np.random.default_rng(SEED)
 
@@ -24,6 +27,20 @@ def rand_vec() -> np.ndarray:
 def temp_db(host, port, capacity=None):
     cap    = capacity or VECTORS + 10_000    # headroom for warmup ops
     client = RedBoxClient(host=host, port=port, db_name=f"bench_{uuid.uuid4().hex[:10]}", dim=DIM, capacity=cap)
+    try:
+        yield client
+    finally:
+        client.drop()
+        client.close()
+
+@contextmanager
+def temp_hnsw_db(host, port, capacity=None):
+    cap = capacity or VECTORS + 10_000
+    client = RedBoxClient.create_hnsw(
+        host=host, port=port,
+        db_name=f"bench_hnsw_{uuid.uuid4().hex[:10]}",
+        dim=DIM, capacity=cap,
+        hnsw_M=HNSW_M, hnsw_ef_construction=HNSW_EF_C)
     try:
         yield client
     finally:
@@ -50,87 +67,142 @@ def sep(title):
     print("-" * 47)
 
 
-def bench_insert(host, port):
-    sep("1/6] INSERT THROUGHPUT")
+def bench_insert(host, port, index_type="ivf"):
+    label = "HNSW" if index_type == "hnsw" else "IVF"
+    sep(f"INSERT THROUGHPUT ({label})")
     vecs = [rand_vec() for _ in range(VECTORS)]
     print(f"   Pre-generating {VECTORS:,} vectors...")
 
-    with temp_db(host, port) as client:
-        t0 = time.perf_counter()
-        for i, v in enumerate(vecs):
-            client.insert(i + 1, v)
-        elapsed = time.perf_counter() - t0
+    if index_type == "hnsw":
+        with temp_hnsw_db(host, port) as client:
+            client.set_hnsw_ef(HNSW_EF_S)
+            t0 = time.perf_counter()
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
+            elapsed = time.perf_counter() - t0
+    else:
+        with temp_db(host, port) as client:
+            t0 = time.perf_counter()
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
+            elapsed = time.perf_counter() - t0
 
     print(f"   Vectors    : {VECTORS:,}")
     print(f"   Time       : {elapsed:.3f} s")
     print(f"   Throughput : {VECTORS/elapsed:,.0f} vectors/sec")
 
 
-def bench_search(host, port):
-    sep("2/6] SEARCH LATENCY  (single nearest neighbor)")
+def bench_search(host, port, index_type="ivf"):
+    label = "HNSW" if index_type == "hnsw" else "IVF"
+    sep(f"SEARCH LATENCY  (single nearest, {label})")
     print("   Note: fresh DB, cold insert then queried immediately.")
-    print("         Comparable to C++ hot-cache run.")
-    print("-" * 47)
 
     vecs    = [rand_vec() for _ in range(VECTORS)]
     queries = [rand_vec() for _ in range(QUERIES)]
 
-    with temp_db(host, port) as client:
-        for i, v in enumerate(vecs):
-            client.insert(i + 1, v)
+    if index_type == "hnsw":
+        with temp_hnsw_db(host, port) as client:
+            client.set_hnsw_ef(HNSW_EF_S)
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
 
-        for q in queries[:50]:
-            client.search(q)
+            for q in queries[:50]:
+                client.search(q)
 
-        times = []
-        for q in queries:
-            t0 = time.perf_counter()
-            client.search(q)
-            times.append((time.perf_counter() - t0) * 1000)
+            times = []
+            for q in queries:
+                t0 = time.perf_counter()
+                client.search(q)
+                times.append((time.perf_counter() - t0) * 1000)
+    else:
+        with temp_db(host, port) as client:
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
+
+            for q in queries[:50]:
+                client.search(q)
+
+            times = []
+            for q in queries:
+                t0 = time.perf_counter()
+                client.search(q)
+                times.append((time.perf_counter() - t0) * 1000)
 
     print_stats(times)
 
 
-def bench_search_n(host, port):
-    sep("3/6] SEARCH_N LATENCY  (top-10 nearest neighbors)")
+def bench_search_n(host, port, index_type="ivf"):
+    label = "HNSW" if index_type == "hnsw" else "IVF"
+    sep(f"SEARCH_N LATENCY  (top-10 nearest, {label})")
     K       = 10
     vecs    = [rand_vec() for _ in range(VECTORS)]
     queries = [rand_vec() for _ in range(QUERIES)]
 
-    with temp_db(host, port) as client:
-        for i, v in enumerate(vecs):
-            client.insert(i + 1, v)
+    if index_type == "hnsw":
+        with temp_hnsw_db(host, port) as client:
+            client.set_hnsw_ef(HNSW_EF_S)
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
 
-        for q in queries[:50]:
-            client.search_n(q, K)
+            for q in queries[:50]:
+                client.search_n(q, K)
 
-        times = []
-        for q in queries:
-            t0 = time.perf_counter()
-            client.search_n(q, K)
-            times.append((time.perf_counter() - t0) * 1000)
+            times = []
+            for q in queries:
+                t0 = time.perf_counter()
+                client.search_n(q, K)
+                times.append((time.perf_counter() - t0) * 1000)
+    else:
+        with temp_db(host, port) as client:
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
+
+            for q in queries[:50]:
+                client.search_n(q, K)
+
+            times = []
+            for q in queries:
+                t0 = time.perf_counter()
+                client.search_n(q, K)
+                times.append((time.perf_counter() - t0) * 1000)
 
     print(f"   K    : {K}")
     print_stats(times)
 
 
-def bench_update(host, port):
-    sep("4/6] UPDATE THROUGHPUT  (in-place via id_to_index)")
+def bench_update(host, port, index_type="ivf"):
+    label = "HNSW" if index_type == "hnsw" else "IVF"
+    sep(f"UPDATE THROUGHPUT  ({label})")
     vecs     = [rand_vec() for _ in range(VECTORS)]
     new_vecs = [rand_vec() for _ in range(QUERIES)]
 
-    with temp_db(host, port) as client:
-        for i, v in enumerate(vecs):
-            client.insert(i + 1, v)
+    if index_type == "hnsw":
+        with temp_hnsw_db(host, port) as client:
+            client.set_hnsw_ef(HNSW_EF_S)
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
 
-        for i in range(50):
-            client.update(i + 1, new_vecs[i % QUERIES])
+            for i in range(50):
+                client.update(i + 1, new_vecs[i % QUERIES])
 
-        times = []
-        for i in range(QUERIES):
-            t0 = time.perf_counter()
-            client.update(i + 1, new_vecs[i])
-            times.append((time.perf_counter() - t0) * 1000)
+            times = []
+            for i in range(QUERIES):
+                t0 = time.perf_counter()
+                client.update(i + 1, new_vecs[i])
+                times.append((time.perf_counter() - t0) * 1000)
+    else:
+        with temp_db(host, port) as client:
+            for i, v in enumerate(vecs):
+                client.insert(i + 1, v)
+
+            for i in range(50):
+                client.update(i + 1, new_vecs[i % QUERIES])
+
+            times = []
+            for i in range(QUERIES):
+                t0 = time.perf_counter()
+                client.update(i + 1, new_vecs[i])
+                times.append((time.perf_counter() - t0) * 1000)
 
     s   = sorted(times)
     qps = QUERIES / (sum(times) / 1000)
@@ -142,11 +214,10 @@ def bench_update(host, port):
     print(f"   P95  : {percentile(s, 0.95):.3f} ms")
     print(f"   P99  : {percentile(s, 0.99):.3f} ms  <-- the one that matters")
     print(f"   Max  : {s[-1]:.3f} ms")
-    print(f"   (O(1) lookup via id_to_index <-- no linear scan)")
 
 
 def bench_mixed(host, port):
-    sep("5/6] MIXED WORKLOAD  (70% search | 20% insert | 10% delete)")
+    sep("MIXED WORKLOAD  (70% search | 20% insert | 10% delete, IVF)")
     TOTAL_OPS = 10_000
 
     vecs = [rand_vec() for _ in range(VECTORS)]
@@ -186,7 +257,7 @@ def bench_mixed(host, port):
 
 
 def bench_search_under_deletion(host, port):
-    sep("6/6] SEARCH UNDER HEAVY DELETION  (40% of DB deleted)")
+    sep("SEARCH UNDER HEAVY DELETION  (40% deleted, IVF)")
     DELETE_COUNT = int(VECTORS * 0.4)
     vecs         = [rand_vec() for _ in range(VECTORS)]
     queries      = [rand_vec() for _ in range(QUERIES)]
@@ -213,41 +284,83 @@ def bench_search_under_deletion(host, port):
             times.append((time.perf_counter() - t0) * 1000)
 
     print_stats(times)
-    print("   (Compare QPS/P99 against Bench 2 to see deleted_flags impact)")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host",  default="127.0.0.1")
     parser.add_argument("--port",  type=int, default=8080)
+    parser.add_argument("--index", choices=["ivf", "hnsw", "both"], default="both",
+        help="Which index type to benchmark")
     parser.add_argument("--bench", default="all",
         help="Comma-separated bench IDs (1-6) or 'all'")
     args = parser.parse_args()
 
-    benches = {
-        "1": bench_insert,
-        "2": bench_search,
-        "3": bench_search_n,
-        "4": bench_update,
-        "5": bench_mixed,
-        "6": bench_search_under_deletion,
-    }
-
-    selected = list(benches.keys()) if args.bench == "all" else [b.strip() for b in args.bench.split(",")]
+    run_ivf  = args.index in ("ivf", "both")
+    run_hnsw = args.index in ("hnsw", "both")
 
     print("=" * 47)
     print("  RedBoxDb CLIENT BENCHMARK SUITE")
     print(f"  host={args.host}:{args.port}  dim={DIM}")
     print(f"  Vectors: {VECTORS:,}  Queries: {QUERIES:,}  Seed: {SEED}")
+    print(f"  Index  : {'IVF ' if run_ivf else ''}{'HNSW' if run_hnsw else ''}")
+    if run_hnsw:
+        print(f"  HNSW   : M={HNSW_M} ef_c={HNSW_EF_C} ef_s={HNSW_EF_S}")
     print("=" * 47)
     print("  NOTE: All timings are end-to-end (TCP wire included)")
 
+    # Core benchmarks: run for each index type
+    core_benchmarks = [
+        ("1", "INSERT",  lambda idx: bench_insert(args.host, args.port, idx)),
+        ("2", "SEARCH",  lambda idx: bench_search(args.host, args.port, idx)),
+        ("3", "SEARCH_N", lambda idx: bench_search_n(args.host, args.port, idx)),
+        ("4", "UPDATE",  lambda idx: bench_update(args.host, args.port, idx)),
+    ]
+
+    # IVF-only benchmarks
+    ivf_benchmarks = [
+        ("5", "MIXED", bench_mixed),
+        ("6", "DELETION", bench_search_under_deletion),
+    ]
+
+    selected_core = []
+    selected_ivf  = []
+
+    if args.bench == "all":
+        selected_core = [b[0] for b in core_benchmarks]
+        selected_ivf  = [b[0] for b in ivf_benchmarks]
+    else:
+        ids = [b.strip() for b in args.bench.split(",")]
+        for bid in ids:
+            if bid in ("5", "6"):
+                selected_ivf.append(bid)
+            elif bid in ("1", "2", "3", "4"):
+                selected_core.append(bid)
+            else:
+                print(f"  [WARN] Unknown bench id '{bid}', skipping")
+
     t_total = time.perf_counter()
-    for b in selected:
-        if b in benches:
-            benches[b](args.host, args.port)
-        else:
-            print(f"  [WARN] Unknown bench id '{b}', skipping")
+    bench_num = 0
+
+    # Run IVF first, then HNSW
+    if run_ivf:
+        for bid, _, fn in core_benchmarks:
+            if bid in selected_core:
+                bench_num += 1
+                print(f"\n--- [{bench_num}] IVF ---")
+                fn("ivf")
+        for bid, _, fn in ivf_benchmarks:
+            if bid in selected_ivf:
+                bench_num += 1
+                print(f"\n--- [{bench_num}] IVF ---")
+                fn(args.host, args.port)
+
+    if run_hnsw:
+        for bid, _, fn in core_benchmarks:
+            if bid in selected_core:
+                bench_num += 1
+                print(f"\n--- [{bench_num}] HNSW ---")
+                fn("hnsw")
 
     elapsed = time.perf_counter() - t_total
     print(f"\n{'=' * 47}")
