@@ -8,6 +8,7 @@
 #include <random>
 #include "redboxdb/storage_manager.hpp"
 #include "redboxdb/SpecificMetadata.hpp"
+#include "redboxdb/hnsw_manager.hpp"
 
 namespace CoreEngine {
 
@@ -39,6 +40,11 @@ namespace CoreEngine {
         // HNSW RNG
         std::mt19937 hnsw_rng;
 
+        // HNSW insert buffers (reused across inserts to avoid per-insert allocation)
+        std::vector<uint8_t> hnsw_insert_visited_buf;
+        uint32_t hnsw_insert_visit_gen = 0;
+        std::vector<HnswManager::SearchResult> hnsw_insert_nb_cands;
+
         bool   use_avx2;
         size_t num_threads;
 
@@ -66,6 +72,7 @@ namespace CoreEngine {
         bool     update(uint64_t id, const std::vector<float>& vec);
         void     set_num_probes(uint8_t p);
         void     set_hnsw_ef_search(uint16_t ef);
+        void     warm_pages();
 
         // Tombstone helpers
         void load_tombstones();

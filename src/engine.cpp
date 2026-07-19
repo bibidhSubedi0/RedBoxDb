@@ -130,7 +130,8 @@ namespace CoreEngine {
                         static_cast<uint32_t>(old_slot), vec.data(),
                         _manager->get_header(), _manager->get_float_ptr_mut(0),
                         _manager->get_hnsw_edge_block(), _manager->get_hnsw_level_block(),
-                        dimension, use_avx2, deleted_flags.data(), hnsw_rng);
+                        dimension, use_avx2, deleted_flags.data(), hnsw_rng,
+                        hnsw_insert_visited_buf, hnsw_insert_visit_gen, hnsw_insert_nb_cands);
                 }
 
                 deleted_flags[old_slot] = 0;
@@ -194,7 +195,8 @@ namespace CoreEngine {
                     static_cast<uint32_t>(slot), vec.data(),
                     _manager->get_header(), _manager->get_float_ptr_mut(0),
                     _manager->get_hnsw_edge_block(), _manager->get_hnsw_level_block(),
-                    dimension, use_avx2, deleted_flags.data(), hnsw_rng);
+                    dimension, use_avx2, deleted_flags.data(), hnsw_rng,
+                    hnsw_insert_visited_buf, hnsw_insert_visit_gen, hnsw_insert_nb_cands);
             }
 
             id_to_index[id] = slot;
@@ -232,10 +234,13 @@ namespace CoreEngine {
         if (count == 0) return -1;
 
         if (_manager->get_index_type() == IndexType::HNSW) {
+            thread_local std::vector<uint8_t> hnsw_visited_buf;
+            thread_local uint32_t hnsw_visit_gen = 0;
             uint32_t best_slot = HnswManager::hnsw_search_1(
                 query.data(), _manager->get_header(),
                 _manager->get_float_ptr(0), _manager->get_hnsw_edge_block(),
-                dimension, use_avx2, deleted_flags.data());
+                dimension, use_avx2, deleted_flags.data(),
+                hnsw_visited_buf, hnsw_visit_gen, 8);
             if (best_slot == HnswManager::EMPTY) return -1;
             return static_cast<int>(_manager->get_id(best_slot));
         }
@@ -315,11 +320,14 @@ namespace CoreEngine {
         if (count == 0) return {};
 
         if (_manager->get_index_type() == IndexType::HNSW) {
+            thread_local std::vector<uint8_t> hnsw_visited_buf;
+            thread_local uint32_t hnsw_visit_gen = 0;
             std::vector<std::pair<float, uint32_t>> hnsw_results;
             HnswManager::hnsw_search(
                 query.data(), N, _manager->get_header(),
                 _manager->get_float_ptr(0), _manager->get_hnsw_edge_block(),
-                dimension, use_avx2, deleted_flags.data(), hnsw_results);
+                dimension, use_avx2, deleted_flags.data(), hnsw_results,
+                hnsw_visited_buf, hnsw_visit_gen);
 
             std::vector<int> result;
             int limit = std::min(N, (int)hnsw_results.size());
@@ -497,6 +505,32 @@ namespace CoreEngine {
         _manager->set_hnsw_ef_search(ef);
     }
 
+    void RedBoxVector::warm_pages() {
+        if (!_manager || _manager->get_count() == 0) return;
+
+        volatile uint64_t sink = 0;
+        size_t cap = _manager->get_header()->max_capacity;
+
+        // Touch every vector (float_block) — 4KB stride = page
+        const float* fblk = _manager->get_float_ptr(0);
+        size_t dim = dimension;
+        for (size_t i = 0; i < cap; ++i) {
+            sink += *reinterpret_cast<const uint64_t*>(&fblk[i * dim]);
+        }
+
+        // Touch every edge entry
+        if (_manager->get_index_type() == IndexType::HNSW) {
+            const uint32_t* eblk = _manager->get_hnsw_edge_block();
+            uint8_t M = _manager->get_header()->hnsw_M;
+            size_t epn = HnswManager::edges_per_node(M);
+            for (size_t i = 0; i < cap; ++i) {
+                sink += *reinterpret_cast<const uint64_t*>(&eblk[i * epn]);
+            }
+        }
+
+        (void)sink;
+    }
+
 } 
 
 
@@ -579,6 +613,7 @@ namespace StorageManager {
 
         map_base = mmap(nullptr, required_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (map_base == MAP_FAILED) { close(fd); throw std::runtime_error("mmap failed"); }
+        madvise(map_base, required_size, MADV_RANDOM);
 #endif
 
         // Setup pointers based on index type

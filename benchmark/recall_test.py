@@ -43,7 +43,7 @@ def temp_db(host, port, capacity):
         client.close()
 
 @contextmanager
-def temp_hnsw_db(host, port, capacity, hnsw_M=16, hnsw_ef_construction=200):
+def temp_hnsw_db(host, port, capacity, hnsw_M=16, hnsw_ef_construction=160):
     client = RedBoxClient.create_hnsw(
         host=host, port=port,
         db_name=f"recall_hnsw_{uuid.uuid4().hex[:10]}",
@@ -110,7 +110,7 @@ def run_recall(host, port, db_size, k, num_probes, seed=42):
     recall = hits / (QUERIES * k)
     return recall, insert_time, search_time, capacity, kmeans_fired
 
-def run_recall_hnsw(host, port, db_size, k, hnsw_M=16, hnsw_ef_construction=200, hnsw_ef_search=128, seed=42):
+def run_recall_hnsw(host, port, db_size, k, hnsw_M=16, hnsw_ef_construction=160, hnsw_ef_search=128, seed=42):
     corpus  = make_corpus(db_size, seed)
     queries = make_queries(seed)
     true_topk = brute_force_topk(corpus, queries, k)
@@ -143,7 +143,7 @@ def main():
     parser.add_argument("--probes", type=int, default=10, help="Number of IVF clusters to probe")
     parser.add_argument("--index", choices=["ivf", "hnsw", "both"], default="both", help="Which index to test")
     parser.add_argument("--hnsw-M", type=int, default=16, help="HNSW M parameter")
-    parser.add_argument("--hnsw-ef-c", type=int, default=200, help="HNSW ef_construction")
+    parser.add_argument("--hnsw-ef-c", type=int, default=160, help="HNSW ef_construction")
     parser.add_argument("--hnsw-ef-s", type=int, default=128, help="HNSW ef_search")
     args = parser.parse_args()
 

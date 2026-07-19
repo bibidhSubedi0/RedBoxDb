@@ -15,7 +15,7 @@ DIM        = 128
 QUERIES    = 1_000
 SEED       = 42
 HNSW_M     = 16
-HNSW_EF_C  = 200
+HNSW_EF_C  = 160
 HNSW_EF_S  = 256
 
 rng = np.random.default_rng(SEED)
