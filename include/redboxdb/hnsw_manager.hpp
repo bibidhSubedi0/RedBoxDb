@@ -10,6 +10,13 @@
 #include "redboxdb/distance.hpp"
 #include "redboxdb/SpecificMetadata.hpp"
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#define HNSW_PREFETCH(addr) _mm_prefetch((const char*)(addr), _MM_HINT_T0)
+#else
+#define HNSW_PREFETCH(addr) __builtin_prefetch(addr)
+#endif
+
 namespace HnswManager {
 
     static constexpr uint32_t EMPTY = CoreEngine::SpecificMetadata::UINT32_MAX_SENTINEL;
@@ -77,7 +84,7 @@ namespace HnswManager {
         int M,
         bool use_avx2,
         const uint8_t* deleted_flags,
-        std::vector<uint32_t>& visited_buf,
+        std::vector<uint8_t>& visited_buf,
         uint32_t& visit_gen,
         int capacity)
     {
@@ -85,9 +92,8 @@ namespace HnswManager {
         MinPQ candidates_pq;
         std::priority_queue<SearchResult> results_pq;
 
-        // O(1) visited reset: just increment generation counter
         ++visit_gen;
-        if ((int)visited_buf.size() != capacity) {
+        if (visit_gen >= 255 || (int)visited_buf.size() != capacity) {
             visited_buf.assign(capacity, 0);
             visit_gen = 1;
         }
@@ -111,12 +117,25 @@ namespace HnswManager {
             // Expand neighbors of f at this level
             const uint32_t* neighb = level_edges(node_edges(edge_base, f.slot, M), level, M);
             int mm = m_max(level, M);
+
+            // Prefetch first few neighbor vectors to hide DRAM latency
+            for (int pi = 0; pi < mm && pi < 4; ++pi) {
+                if (neighb[pi] != EMPTY) {
+                    HNSW_PREFETCH(float_block + (size_t)neighb[pi] * dim);
+                }
+            }
+
             for (int i = 0; i < mm; ++i) {
                 uint32_t nb = neighb[i];
                 if (nb == EMPTY) continue;
                 if (deleted_flags && deleted_flags[nb]) continue;
                 if (visited_buf[nb] == visit_gen) continue;
                 visited_buf[nb] = visit_gen;
+
+                // Prefetch next neighbor's vector while computing current
+                if (i + 4 < mm && neighb[i + 4] != EMPTY) {
+                    HNSW_PREFETCH(float_block + (size_t)neighb[i + 4] * dim);
+                }
 
                 float nb_dist = Distance::l2(query, float_block + (size_t)nb * dim, dim, use_avx2);
 
@@ -139,6 +158,126 @@ namespace HnswManager {
         }
         std::reverse(results.begin(), results.end());
         return results;
+    }
+
+    // Ultra-optimized single-NN search_layer: flat sorted arrays, zero heap allocation,
+    // 4-ahead prefetch pipeline, inline best tracking.
+    inline std::pair<uint32_t, float> search_layer_1(
+        const float* query,
+        uint32_t entry_slot,
+        int ef,
+        int level,
+        const float* float_block,
+        const uint32_t* edge_base,
+        size_t dim,
+        int M,
+        bool use_avx2,
+        const uint8_t* deleted_flags,
+        std::vector<uint8_t>& visited_buf,
+        uint32_t& visit_gen,
+        int capacity)
+    {
+        struct FlatEntry { float dist; uint32_t slot; };
+
+        static constexpr int MAX_CAND = 256;
+        FlatEntry cand[MAX_CAND];
+        int n_cand = 0;
+
+        FlatEntry res[MAX_CAND];
+        int n_res = 0;
+
+        uint32_t best_slot = EMPTY;
+        float best_dist = std::numeric_limits<float>::max();
+
+        ++visit_gen;
+        if (visit_gen >= 255 || (int)visited_buf.size() != capacity) {
+            visited_buf.assign(capacity, 0);
+            visit_gen = 1;
+        }
+
+        float entry_dist = Distance::l2(query, float_block + (size_t)entry_slot * dim, dim, use_avx2);
+        cand[n_cand++] = {entry_dist, entry_slot};
+        if (!(deleted_flags && deleted_flags[entry_slot])) {
+            res[n_res++] = {entry_dist, entry_slot};
+            best_slot = entry_slot;
+            best_dist = entry_dist;
+        }
+        visited_buf[entry_slot] = visit_gen;
+
+        int mm = m_max(level, M);
+
+        while (n_cand > 0) {
+            int min_idx = 0;
+            for (int i = 1; i < n_cand; ++i) {
+                if (cand[i].dist < cand[min_idx].dist)
+                    min_idx = i;
+            }
+            FlatEntry f = cand[min_idx];
+            cand[min_idx] = cand[--n_cand];
+
+            if (n_res >= ef && f.dist > res[n_res - 1].dist) {
+                break;
+            }
+
+            const uint32_t* neighb = level_edges(node_edges(edge_base, f.slot, M), level, M);
+
+            for (int pi = 0; pi < mm && pi < 4; ++pi) {
+                if (neighb[pi] != EMPTY) {
+                    HNSW_PREFETCH(float_block + (size_t)neighb[pi] * dim);
+                }
+            }
+            if (n_cand > 0) {
+                int next_idx = 0;
+                for (int i = 1; i < n_cand; ++i) {
+                    if (cand[i].dist < cand[next_idx].dist)
+                        next_idx = i;
+                }
+                HNSW_PREFETCH(node_edges(edge_base, cand[next_idx].slot, M));
+            }
+
+            for (int i = 0; i < mm; ++i) {
+                uint32_t nb = neighb[i];
+                if (nb == EMPTY) continue;
+                if (deleted_flags && deleted_flags[nb]) continue;
+                if (visited_buf[nb] == visit_gen) continue;
+                visited_buf[nb] = visit_gen;
+
+                if (i + 4 < mm && neighb[i + 4] != EMPTY) {
+                    HNSW_PREFETCH(float_block + (size_t)neighb[i + 4] * dim);
+                }
+
+                float nb_dist = Distance::l2(query, float_block + (size_t)nb * dim, dim, use_avx2);
+
+                if (n_res < ef || nb_dist < res[n_res - 1].dist) {
+                    if (n_cand < MAX_CAND) {
+                        cand[n_cand++] = {nb_dist, nb};
+                    }
+
+                    int pos = n_res;
+                    if (n_res >= ef) {
+                        pos = n_res - 1;
+                        for (int j = pos; j > 0 && res[j - 1].dist > nb_dist; --j) {
+                            res[j] = res[j - 1];
+                            --pos;
+                        }
+                        res[pos] = {nb_dist, nb};
+                    } else {
+                        for (pos = n_res; pos > 0 && res[pos - 1].dist > nb_dist; --pos) {
+                            res[pos] = res[pos - 1];
+                        }
+                        res[pos] = {nb_dist, nb};
+                        ++n_res;
+                    }
+
+                    if (nb_dist < best_dist) {
+                        best_dist = nb_dist;
+                        best_slot = nb;
+                    }
+                }
+            }
+        }
+
+        return {best_slot, best_dist};
     }
 
     // Select M neighbors from candidates using the pruning heuristic
@@ -189,7 +328,6 @@ namespace HnswManager {
     }
 
     // Select M closest from candidates — simple sort+trim, no heuristic pruning.
-    // Used for reverse link updates where the O(M²) heuristic is overkill.
     inline void select_closest(
         std::vector<SearchResult>& candidates,
         int M)
@@ -199,6 +337,33 @@ namespace HnswManager {
         std::partial_sort(candidates.begin(), candidates.begin() + M, candidates.end(),
             [](const SearchResult& a, const SearchResult& b) { return a.dist < b.dist; });
         candidates.resize(M);
+    }
+
+    // Select M closest neighbors from candidates — returns slot indices.
+    // Used at level 0 where diversity heuristic is too aggressive and hurts recall.
+    inline std::vector<uint32_t> select_closest_neighbors(
+        const std::vector<SearchResult>& candidates,
+        int M)
+    {
+        int n = std::min(M, (int)candidates.size());
+        std::vector<uint32_t> selected;
+        selected.reserve(n);
+
+        if (n == (int)candidates.size()) {
+            for (const auto& c : candidates)
+                selected.push_back(c.slot);
+            return selected;
+        }
+
+        std::vector<const SearchResult*> ptrs(candidates.size());
+        for (size_t i = 0; i < candidates.size(); ++i)
+            ptrs[i] = &candidates[i];
+        std::nth_element(ptrs.begin(), ptrs.begin() + n, ptrs.end(),
+            [](const SearchResult* a, const SearchResult* b) { return a->dist < b->dist; });
+
+        for (int i = 0; i < n; ++i)
+            selected.push_back(ptrs[i]->slot);
+        return selected;
     }
 
     inline void set_neighbors(
@@ -242,7 +407,10 @@ namespace HnswManager {
         size_t dim,
         bool use_avx2,
         const uint8_t* deleted_flags,
-        std::mt19937& rng)
+        std::mt19937& rng,
+        std::vector<uint8_t>& visited_buf,
+        uint32_t& visit_gen,
+        std::vector<SearchResult>& nb_cands)
     {
         int M = header->hnsw_M;
         int ef_construction = header->hnsw_ef_construction;
@@ -277,6 +445,10 @@ namespace HnswManager {
                     uint32_t nb = neighb[i];
                     if (nb == EMPTY) continue;
                     if (deleted_flags && deleted_flags[nb]) continue;
+                    // Prefetch next neighbor's vector
+                    if (i + 1 < mm && neighb[i + 1] != EMPTY) {
+                        HNSW_PREFETCH(float_block + (size_t)neighb[i + 1] * dim);
+                    }
                     float nb_dist = Distance::l2(vec, float_block + (size_t)nb * dim, dim, use_avx2);
                     if (nb_dist < best_dist) {
                         best_nb = nb;
@@ -293,15 +465,14 @@ namespace HnswManager {
 
         // Phase 2: for each level from min(level, cur_max_level) down to 0
         int lower_bound = std::min(level, cur_max_level);
-        std::vector<uint32_t> visited_buf;
-        uint32_t visit_gen = 0;
-        std::vector<SearchResult> nb_cands;
-        std::vector<uint32_t> nb_cands_data;
 
         for (int l = lower_bound; l >= 0; --l) {
-            int ef = (l == 0) ? ef_construction * 2 : ef_construction;
+            int ef = ef_construction;
             auto results = search_layer(vec, curr, ef, l, float_block, edge_base, dim, M, use_avx2, deleted_flags, visited_buf, visit_gen, (int)header->max_capacity);
-            auto selected = select_neighbors_heuristic(results, m_max(l, M), float_block, dim, use_avx2);
+
+            // Diversity heuristic at all levels for well-connected graph
+            std::vector<uint32_t> selected;
+            selected = select_neighbors_heuristic(results, m_max(l, M), float_block, dim, use_avx2);
 
             // Set outgoing edges from new node
             set_neighbors(edge_base, slot, l, M, selected);
@@ -309,6 +480,9 @@ namespace HnswManager {
             // Add bidirectional connections
             int mm = m_max(l, M);
             for (uint32_t nb : selected) {
+                // Prefetch next neighbor's edge data
+                HNSW_PREFETCH(node_edges(edge_base, nb, M));
+
                 int nb_count = level_edge_count(
                     level_edges(node_edges(edge_base, nb, M), l, M), mm);
 
@@ -327,7 +501,9 @@ namespace HnswManager {
                                 float_block + (size_t)nb_lev[i] * dim, dim, use_avx2), nb_lev[i]});
                         }
                     }
-                    auto pruned = select_neighbors_heuristic(nb_cands, mm, float_block, dim, use_avx2);
+                    // Diversity heuristic at all levels for well-connected graph
+                    std::vector<uint32_t> pruned;
+                    pruned = select_neighbors_heuristic(nb_cands, mm, float_block, dim, use_avx2);
                     set_neighbors(edge_base, nb, l, M, pruned);
                 }
             }
@@ -354,7 +530,9 @@ namespace HnswManager {
         size_t dim,
         bool use_avx2,
         const uint8_t* deleted_flags,
-        std::vector<std::pair<float, uint32_t>>& results_out)
+        std::vector<std::pair<float, uint32_t>>& results_out,
+        std::vector<uint8_t>& visited_buf,
+        uint32_t& visit_gen)
     {
         int M = header->hnsw_M;
         int ef_search = header->hnsw_ef_search;
@@ -375,6 +553,9 @@ namespace HnswManager {
                     uint32_t nb = neighb[i];
                     if (nb == EMPTY) continue;
                     if (deleted_flags && deleted_flags[nb]) continue;
+                    if (i + 4 < mm && neighb[i + 4] != EMPTY) {
+                        HNSW_PREFETCH(float_block + (size_t)neighb[i + 4] * dim);
+                    }
                     float nb_dist = Distance::l2(query, float_block + (size_t)nb * dim, dim, use_avx2);
                     if (nb_dist < best_dist) {
                         best_nb = nb;
@@ -389,9 +570,7 @@ namespace HnswManager {
             }
         }
 
-        int ef = std::max(ef_search, N);
-        std::vector<uint32_t> visited_buf;
-        uint32_t visit_gen = 0;
+        int ef = std::max(ef_search, N) * 4;
         auto results = search_layer(query, curr, ef, 0, float_block, edge_base, dim, M, use_avx2, deleted_flags, visited_buf, visit_gen, (int)header->max_capacity);
 
         results_out.clear();
@@ -408,10 +587,13 @@ namespace HnswManager {
         const uint32_t* edge_base,
         size_t dim,
         bool use_avx2,
-        const uint8_t* deleted_flags)
+        const uint8_t* deleted_flags,
+        std::vector<uint8_t>& visited_buf,
+        uint32_t& visit_gen,
+        int ef_override = 0)
     {
         int M = header->hnsw_M;
-        int ef_search = header->hnsw_ef_search;
+        int ef_search = (ef_override > 0) ? ef_override : header->hnsw_ef_search;
         uint32_t entry = (uint32_t)header->hnsw_entry_point;
         int cur_max_level = header->hnsw_max_level;
 
@@ -425,10 +607,21 @@ namespace HnswManager {
                 int mm = m_max(l, M);
                 uint32_t best_nb = EMPTY;
                 float best_dist = curr_dist;
+
+                // Batch prefetch first 4 neighbors
+            for (int pi = 0; pi < mm && pi < 4; ++pi) {
+                if (neighb[pi] != EMPTY) {
+                    HNSW_PREFETCH(float_block + (size_t)neighb[pi] * dim);
+                }
+            }
+
                 for (int i = 0; i < mm; ++i) {
                     uint32_t nb = neighb[i];
                     if (nb == EMPTY) continue;
                     if (deleted_flags && deleted_flags[nb]) continue;
+                    if (i + 4 < mm && neighb[i + 4] != EMPTY) {
+                        HNSW_PREFETCH(float_block + (size_t)neighb[i + 4] * dim);
+                    }
                     float nb_dist = Distance::l2(query, float_block + (size_t)nb * dim, dim, use_avx2);
                     if (nb_dist < best_dist) {
                         best_nb = nb;
@@ -443,12 +636,9 @@ namespace HnswManager {
             }
         }
 
-        std::vector<uint32_t> visited_buf;
-        uint32_t visit_gen = 0;
-        auto results = search_layer(query, curr, std::max(ef_search, 1), 0, float_block, edge_base, dim, M, use_avx2, deleted_flags, visited_buf, visit_gen, (int)header->max_capacity);
+        auto best = search_layer_1(query, curr, std::max(ef_search, 1), 0, float_block, edge_base, dim, M, use_avx2, deleted_flags, visited_buf, visit_gen, (int)header->max_capacity);
 
-        if (results.empty()) return EMPTY;
-        return results[0].slot;
+        return best.first;
     }
 
 } // namespace HnswManager

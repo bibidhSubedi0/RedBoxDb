@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <exception>
 #ifdef _WIN32
     #include <winsock2.h>
     #include <ws2tcpip.h>
@@ -70,6 +71,8 @@ void handle_client(SOCKET client_socket, SharedState& state) {
 void handle_client(int client_socket, SharedState& state) {
 #endif
     std::cout << "[SERVER] Client connected (thread " << std::this_thread::get_id() << ")\n";
+
+    try {
 
     CoreEngine::RedBoxVector* active_db = nullptr;
     std::mutex* active_mtx = nullptr;
@@ -290,6 +293,12 @@ void handle_client(int client_socket, SharedState& state) {
         }
     }
 
+    } catch (const std::exception& e) {
+        std::cerr << "[SERVER] Client handler exception (thread " << std::this_thread::get_id() << "): " << e.what() << "\n";
+    } catch (...) {
+        std::cerr << "[SERVER] Client handler unknown exception (thread " << std::this_thread::get_id() << ")\n";
+    }
+
 #ifdef _WIN32
     closesocket(client_socket);
 #else
@@ -344,9 +353,14 @@ int main() {
 
         // Each client gets its own detached thread.
         // The thread owns the socket and closes it when done.
-        std::thread([client_socket, &state]() {
-            handle_client(client_socket, state);
+        try {
+            std::thread([client_socket, &state]() {
+                handle_client(client_socket, state);
             }).detach();
+        } catch (const std::exception& e) {
+            std::cerr << "[SERVER] Failed to create thread: " << e.what() << "\n";
+            closesocket(client_socket);
+        }
     }
 
     closesocket(server_socket);

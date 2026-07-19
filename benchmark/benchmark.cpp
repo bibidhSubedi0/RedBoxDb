@@ -19,7 +19,7 @@ const int    NUM_QUERIES = 1'000;    // 1k queries — enough for stable percent
 const int    NUM_UPDATES = 1'000;
 const int    TOP_K = 10;
 const uint8_t HNSW_M = 16;
-const uint16_t HNSW_EF_C = 200;
+const uint16_t HNSW_EF_C = 160;
 const uint16_t HNSW_EF_S = 256;
 std::string DB_BASE = "bench";
 
@@ -302,6 +302,7 @@ int main(int argc, char* argv[]) {
 
             CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, NUM_VECTORS, HNSW_M, HNSW_EF_C);
             db.set_hnsw_ef_search(HNSW_EF_S);
+            db.warm_pages();
 
             for (int i = 0; i < 10; ++i)
                 db.search(rand_vec(DIMENSIONS));
@@ -338,6 +339,7 @@ int main(int argc, char* argv[]) {
 
             CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, NUM_VECTORS, HNSW_M, HNSW_EF_C);
             db.set_hnsw_ef_search(HNSW_EF_S);
+            db.warm_pages();
 
             for (int i = 0; i < 10; ++i)
                 db.search_N(rand_vec(DIMENSIONS), TOP_K);
@@ -375,6 +377,7 @@ int main(int argc, char* argv[]) {
 
             CoreEngine::RedBoxVector db(db_name + ".db", DIMENSIONS, NUM_VECTORS, HNSW_M, HNSW_EF_C);
             db.set_hnsw_ef_search(HNSW_EF_S);
+            db.warm_pages();
 
             std::uniform_int_distribution<uint64_t> id_dis(1, NUM_VECTORS);
             std::vector<uint64_t> ids_to_update(NUM_UPDATES);
