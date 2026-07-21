@@ -230,12 +230,13 @@ namespace CoreEngine {
 
     // -----------------------------------------------------------------------
     int RedBoxVector::search(const std::vector<float>& query) {
+        std::shared_lock<std::shared_mutex> lk(rw_mutex);
         int count = static_cast<int>(_manager->get_count());
         if (count == 0) return -1;
 
         if (_manager->get_index_type() == IndexType::HNSW) {
-            thread_local std::vector<uint8_t> hnsw_visited_buf;
-            thread_local uint32_t hnsw_visit_gen = 0;
+            std::vector<uint8_t> hnsw_visited_buf;
+            uint32_t hnsw_visit_gen = 0;
             uint32_t best_slot = HnswManager::hnsw_search_1(
                 query.data(), _manager->get_header(),
                 _manager->get_float_ptr(0), _manager->get_hnsw_edge_block(),
@@ -252,9 +253,8 @@ namespace CoreEngine {
         const float* float_block_snap = _manager->get_float_ptr(0);
 
         // Thread-local buffers: no heap alloc per query
-        thread_local std::vector<std::pair<float, uint16_t>> centroid_dists;
-        thread_local std::vector<int> candidates;
-        candidates.clear();
+        std::vector<std::pair<float, uint16_t>> centroid_dists;
+        std::vector<int> candidates;
 
         if (initialized) {
             const float* centroid_block = _manager->get_centroid_block();
@@ -314,14 +314,15 @@ namespace CoreEngine {
 
     // -----------------------------------------------------------------------
     std::vector<int> RedBoxVector::search_N(const std::vector<float>& query, int N) {
+        std::shared_lock<std::shared_mutex> lk(rw_mutex);
         using PQ = std::priority_queue<std::pair<float, int>>;
 
         int count = static_cast<int>(_manager->get_count());
         if (count == 0) return {};
 
         if (_manager->get_index_type() == IndexType::HNSW) {
-            thread_local std::vector<uint8_t> hnsw_visited_buf;
-            thread_local uint32_t hnsw_visit_gen = 0;
+            std::vector<uint8_t> hnsw_visited_buf;
+            uint32_t hnsw_visit_gen = 0;
             std::vector<std::pair<float, uint32_t>> hnsw_results;
             HnswManager::hnsw_search(
                 query.data(), N, _manager->get_header(),
@@ -344,9 +345,8 @@ namespace CoreEngine {
         bool initialized   = _manager->is_cluster_initialized();
         const float* float_block_snap = _manager->get_float_ptr(0);
 
-        thread_local std::vector<std::pair<float, uint16_t>> centroid_dists;
-        thread_local std::vector<int> candidates;
-        candidates.clear();
+        std::vector<std::pair<float, uint16_t>> centroid_dists;
+        std::vector<int> candidates;
 
         if (initialized) {
             const float* centroid_block = _manager->get_centroid_block();
