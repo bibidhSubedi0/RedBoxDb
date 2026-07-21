@@ -15,11 +15,22 @@ target_include_directories(RedBoxDbLib
 
 target_link_libraries(RedBoxDbLib PRIVATE spdlog::spdlog Threads::Threads)
 
+include(CheckCXXCompilerFlag)
+
 if(MSVC)
-    target_compile_options(RedBoxDbLib PRIVATE /arch:AVX2)
+    check_cxx_compiler_flag("/arch:AVX2" REDBOXDB_HAS_AVX2_FLAG)
+    if(REDBOXDB_HAS_AVX2_FLAG)
+        target_compile_options(RedBoxDbLib PRIVATE /arch:AVX2)
+    endif()
 else()
-    target_compile_options(RedBoxDbLib PRIVATE -mavx2 -mfma)
+    check_cxx_compiler_flag("-mavx2 -mfma" REDBOXDB_HAS_AVX2_FLAG)
+    if(REDBOXDB_HAS_AVX2_FLAG)
+        target_compile_options(RedBoxDbLib PRIVATE -mavx2 -mfma)
+    endif()
 endif()
+# On non-x86 targets (ARM, RISC-V, ...) these flags are invalid and the
+# compiler-flag check above fails, so the library falls back to
+# Distance::l2_scalar() at runtime via Platform::has_avx2() returning false.
 
 set_project_warnings(RedBoxDbLib)
 

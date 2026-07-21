@@ -1,6 +1,12 @@
 ﻿#pragma once
-#include <immintrin.h>
 #include <cstddef>
+
+#if defined(__x86_64__) || defined(_M_X64)
+    #define REDBOXDB_HAS_AVX2_INTRINSICS 1
+    #include <immintrin.h>
+#else
+    #define REDBOXDB_HAS_AVX2_INTRINSICS 0
+#endif
 
 namespace Distance {
 
@@ -14,6 +20,7 @@ namespace Distance {
         return sum;
     }
 
+#if REDBOXDB_HAS_AVX2_INTRINSICS
     // l2 with avx2
     inline float l2_avx2(const float* a, const float* b, size_t dim) {
         __m256 sum = _mm256_setzero_ps();   // 8-lane accumulator, starts at 0
@@ -64,10 +71,13 @@ namespace Distance {
 
         return result;
     }
+#endif
 
     // Call this everywhere — it picks the right path at runtime
     inline float l2(const float* a, const float* b, size_t dim, bool use_avx2) {
+#if REDBOXDB_HAS_AVX2_INTRINSICS
         if (use_avx2) return l2_avx2(a, b, dim);
+#endif
         return l2_scalar(a, b, dim);
     }
 }
