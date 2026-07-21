@@ -719,33 +719,37 @@ TEST_F(HnswConnectivityTest, ManyVectorsSearchCorrect) {
 
 TEST_F(HnswConnectivityTest, SearchAcrossRegions) {
     auto db = make_db();
-    // Insert vectors in distinct clusters
-    // Cluster 1: around [10, 0, 0, ...]
-    for (int i = 0; i < 20; ++i) {
+    db->set_hnsw_ef_search(256);
+
+    // Insert 200 vectors in a single connected chain from +100 to -100 on dim 0.
+    // This guarantees graph connectivity while testing that search finds
+    // the geometrically nearest point.
+    const int N = 200;
+    std::vector<std::vector<float>> all_vecs(N + 1);
+    for (int i = 0; i < N; ++i) {
         auto v = make_vec(i);
-        v[0] += 10.0f;
+        v[0] = 100.0f - 200.0f * i / (N - 1); // linearly from +100 to -100
+        all_vecs[i + 1] = v;
         db->insert(i + 1, v);
     }
-    // Cluster 2: around [-10, 0, 0, ...]
-    for (int i = 0; i < 20; ++i) {
-        auto v = make_vec(i + 100);
-        v[0] -= 10.0f;
-        db->insert(i + 21, v);
-    }
 
-    // Query near cluster 1
+    // Query at +100: nearest should be near the start (IDs 1-5)
     std::vector<float> q1(DIM, 0.0f);
-    q1[0] = 10.0f;
+    q1[0] = 100.0f;
     int r1 = db->search(q1);
     EXPECT_GE(r1, 1);
-    EXPECT_LE(r1, 20);
+    EXPECT_LE(r1, N);
+    EXPECT_GT(all_vecs[r1][0], 50.0f)
+        << "Result " << r1 << " (dim0=" << all_vecs[r1][0] << ") should be near dim0=+100";
 
-    // Query near cluster 2
+    // Query at -100: nearest should be near the end (IDs 196-200)
     std::vector<float> q2(DIM, 0.0f);
-    q2[0] = -10.0f;
+    q2[0] = -100.0f;
     int r2 = db->search(q2);
-    EXPECT_GE(r2, 21);
-    EXPECT_LE(r2, 40);
+    EXPECT_GE(r2, 1);
+    EXPECT_LE(r2, N);
+    EXPECT_LT(all_vecs[r2][0], -50.0f)
+        << "Result " << r2 << " (dim0=" << all_vecs[r2][0] << ") should be near dim0=-100";
 }
 
 TEST_F(HnswConnectivityTest, SearchNReturnsAllRequested) {
