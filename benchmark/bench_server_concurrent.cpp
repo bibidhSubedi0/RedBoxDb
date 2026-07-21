@@ -13,9 +13,12 @@
 #ifdef _WIN32
     #include <winsock2.h>
     #include <ws2tcpip.h>
-    #pragma comment(lib, "Ws2_32.lib")
+    #ifdef _MSC_VER
+        #pragma comment(lib, "Ws2_32.lib")
+    #endif
     #define SOCKET_TYPE SOCKET
     #define CLOSE_SOCKET closesocket
+    inline bool socket_valid(SOCKET_TYPE s) { return s != INVALID_SOCKET; }
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
@@ -24,6 +27,7 @@
     #include <unistd.h>
     #define SOCKET_TYPE int
     #define CLOSE_SOCKET close
+    inline bool socket_valid(SOCKET_TYPE s) { return s >= 0; }
 #endif
 
 // ==========================================
@@ -58,7 +62,7 @@ bool recv_all(SOCKET_TYPE sock, char* buf, int len) {
 
 SOCKET_TYPE connect_to_server(const char* host, int port) {
     SOCKET_TYPE sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return -1;
+    if (!socket_valid(sock)) return -1;
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -182,7 +186,7 @@ int main(int argc, char* argv[]) {
 
     // Verify server is reachable
     SOCKET_TYPE test_sock = connect_to_server(host, port);
-    if (test_sock < 0) {
+    if (!socket_valid(test_sock)) {
         std::cerr << "   [ERROR] Cannot connect to server at " << host << ":" << port << "\n";
         std::cerr << "   Make sure the server is running: ./RedBoxServer\n";
         return 1;
@@ -198,7 +202,7 @@ int main(int argc, char* argv[]) {
         // Pre-populate DB via one connection
         {
             SOCKET_TYPE setup_sock = connect_to_server(host, port);
-            if (setup_sock < 0) { std::cerr << "Failed to connect\n"; return 1; }
+            if (!socket_valid(setup_sock)) { std::cerr << "Failed to connect\n"; return 1; }
 
             select_db(setup_sock, "bench_concurrent", (uint32_t)dim, 200'000);
 
@@ -217,7 +221,7 @@ int main(int argc, char* argv[]) {
         // Warmup: 100 searches from a single connection
         {
             SOCKET_TYPE warmup_sock = connect_to_server(host, port);
-            if (warmup_sock >= 0) {
+            if (socket_valid(warmup_sock)) {
                 select_db(warmup_sock, "bench_concurrent", (uint32_t)dim, 200'000);
                 for (int i = 0; i < 100; ++i)
                     search_vec(warmup_sock, rand_vec(dim));
@@ -236,7 +240,7 @@ int main(int argc, char* argv[]) {
         for (int c = 0; c < num_clients; ++c) {
             threads.emplace_back([&, c]() {
                 SOCKET_TYPE sock = connect_to_server(host, port);
-                if (sock < 0) { total_errors++; return; }
+                if (!socket_valid(sock)) { total_errors++; return; }
 
                 select_db(sock, "bench_concurrent", (uint32_t)dim, 200'000);
 
@@ -296,7 +300,7 @@ int main(int argc, char* argv[]) {
         // Pre-populate shared DB
         {
             SOCKET_TYPE setup_sock = connect_to_server(host, port);
-            if (setup_sock < 0) { std::cerr << "Failed to connect\n"; return 1; }
+            if (!socket_valid(setup_sock)) { std::cerr << "Failed to connect\n"; return 1; }
 
             select_db(setup_sock, "bench_mixed_shared", (uint32_t)dim, 200'000);
 
@@ -323,7 +327,7 @@ int main(int argc, char* argv[]) {
         // Warmup
         {
             SOCKET_TYPE warmup_sock = connect_to_server(host, port);
-            if (warmup_sock >= 0) {
+            if (socket_valid(warmup_sock)) {
                 select_db(warmup_sock, "bench_mixed_shared", (uint32_t)dim, 200'000);
                 for (int i = 0; i < 100; ++i)
                     search_vec(warmup_sock, rand_vec(dim));
@@ -337,7 +341,7 @@ int main(int argc, char* argv[]) {
         for (int c = 0; c < num_clients; ++c) {
             threads.emplace_back([&, c]() {
                 SOCKET_TYPE sock = connect_to_server(host, port);
-                if (sock < 0) { total_errors++; return; }
+                if (!socket_valid(sock)) { total_errors++; return; }
 
                 select_db(sock, "bench_mixed_shared", (uint32_t)dim, 200'000);
 
@@ -397,7 +401,7 @@ int main(int argc, char* argv[]) {
     // Cleanup
     {
         SOCKET_TYPE sock = connect_to_server(host, port);
-        if (sock >= 0) {
+        if (socket_valid(sock)) {
             uint8_t cmd = 8; // CMD_DROP_DB
             uint32_t meta = 0;
             char ack;
