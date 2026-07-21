@@ -34,3 +34,7 @@ if(WIN32)
     target_link_libraries(BenchServerConcurrent PRIVATE ws2_32)
 endif()
 set_project_warnings(BenchServerConcurrent)
+
+add_executable(CiBench ci_bench.cpp)
+target_link_libraries(CiBench PRIVATE RedBoxDbLib spdlog::spdlog Threads::Threads)
+set_project_warnings(CiBench)
