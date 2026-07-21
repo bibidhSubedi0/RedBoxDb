@@ -1,17 +1,14 @@
 name: Benchmarks
 
 on:
-  push:
-    branches: [main, master]
   pull_request:
     branches: [main, master]
 
 permissions:
-  contents: write
   pull-requests: write
 
 concurrency:
-  group: bench-${{ github.ref }}
+  group: bench-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -27,23 +24,12 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
           cmake --build build --target CiBench -j$(nproc)
 
-      - name: Run benchmarks (push)
-        if: github.event_name == 'push'
-        run: python3 benchmark/ci_bench.py commit
-
-      - name: Run benchmarks (PR)
-        if: github.event_name == 'pull_request'
-        id: bench_pr
+      - name: Run benchmarks and post comment
         run: |
           COMMENT=$(python3 benchmark/ci_bench.py pr)
           echo "$COMMENT" > /tmp/bench_comment.md
-          echo "comment<<EOF" >> "$GITHUB_OUTPUT"
-          cat /tmp/bench_comment.md >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: Post PR comment
-        if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request@v2
-        with:
-          header: benchmark
-          message: ${{ steps.bench_pr.outputs.comment }}
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body-file /tmp/bench_comment.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
