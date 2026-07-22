@@ -14,8 +14,17 @@ target_link_libraries(RedBoxDbTests
 
 set_project_warnings(RedBoxDbTests)
 
-if(NOT MSVC)
-    target_compile_options(RedBoxDbTests PRIVATE -mavx2 -mfma)
+include(CheckCXXCompilerFlag)
+if(MSVC)
+    check_cxx_compiler_flag("/arch:AVX2" REDBOXDB_HAS_AVX2_FLAG)
+    if(REDBOXDB_HAS_AVX2_FLAG)
+        target_compile_options(RedBoxDbTests PRIVATE /arch:AVX2)
+    endif()
+else()
+    check_cxx_compiler_flag("-mavx2 -mfma" REDBOXDB_HAS_AVX2_FLAG)
+    if(REDBOXDB_HAS_AVX2_FLAG)
+        target_compile_options(RedBoxDbTests PRIVATE -mavx2 -mfma)
+    endif()
 endif()
 
 add_executable(VerifyHnsw verify_hnsw.cpp)
