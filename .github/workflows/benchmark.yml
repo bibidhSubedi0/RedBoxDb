@@ -35,9 +35,17 @@ jobs:
 
       - name: Run benchmarks (push to main)
         if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python3 benchmark/ci_bench.py commit
-          git push origin master
+          BRANCH="bench/report-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          gh pr create --title "bench: update performance report" \
+            --body "Auto-generated benchmark report update." \
+            --base master --head "$BRANCH"
+          gh pr merge --auto --squash
 
       - name: Run benchmarks and post comment (PR)
         if: github.event_name == 'pull_request'
