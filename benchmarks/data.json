@@ -14,6 +14,21 @@
       "threads": 12,
       "num_vectors": 100000,
       "dimensions": 128
+    },
+    {
+      "commit": "5366613",
+      "date": "2026-07-22",
+      "message": "Merge pull request #127 from bibidhSubedi0/dev",
+      "hnsw_insert_per_sec": 1687,
+      "hnsw_qps_1t": 29297,
+      "hnsw_qps_nt": 81296,
+      "hnsw_recall_100": 0.8632,
+      "ivf_insert_per_sec": 64329,
+      "ivf_qps_1t": 5074,
+      "ivf_qps_nt": 11386,
+      "threads": 4,
+      "num_vectors": 100000,
+      "dimensions": 128
     }
   ]
 }
