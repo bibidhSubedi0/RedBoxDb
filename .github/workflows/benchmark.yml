@@ -35,7 +35,9 @@ jobs:
 
       - name: Run benchmarks (push to main)
         if: github.event_name == 'push'
-        run: python3 benchmark/ci_bench.py commit
+        run: |
+          python3 benchmark/ci_bench.py commit
+          git push origin master
 
       - name: Run benchmarks and post comment (PR)
         if: github.event_name == 'pull_request'
