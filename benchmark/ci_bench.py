@@ -294,7 +294,7 @@ def main():
         with open(REPORT_FILE, "w") as f:
             f.write(report)
 
-        git_commit(f"bench: update performance report [{sha}]")
+        git_commit(f"bench: update performance report [{sha}] [skip ci]")
         print(f"\nReport updated. {len(history['results'])} entries in history.", file=sys.stderr)
 
     elif mode == "pr":

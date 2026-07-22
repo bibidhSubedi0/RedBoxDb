@@ -18,6 +18,7 @@
 #include "redboxdb/engine.hpp"
 #include <filesystem>
 #include <cstring>
+#include <cctype>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -51,6 +52,15 @@ const uint8_t CMD_DROP_DB  = 8;
 const uint8_t CMD_SET_PROBES = 9;
 const uint8_t CMD_CREATE_HNSW_DB = 10;
 const uint8_t CMD_SET_HNSW_EF = 11;
+
+constexpr size_t MAX_DB_NAME_LEN = 64;
+inline bool is_valid_db_name(const std::string& name) {
+    if (name.empty() || name.size() > MAX_DB_NAME_LEN) return false;
+    for (char c : name) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) return false;
+    }
+    return true;
+}
 
 
 using DbCatalog = std::unordered_map<std::string, std::unique_ptr<CoreEngine::RedBoxVector>>;
@@ -112,9 +122,20 @@ void handle_client(int client_socket, SharedState& state) {
         // --- HANDSHAKE / SELECT DB ---
         if (cmd == CMD_SELECT_DB) {
             uint32_t name_len = meta_data;
+            if (name_len > MAX_DB_NAME_LEN) {
+                std::cerr << "   [REJECTED] name_len=" << name_len << " exceeds limit\n";
+                break;
+            }
             std::string db_name(name_len, ' ');
 
             if (!recv_all(&db_name[0], (int)name_len)) break;
+
+            if (!is_valid_db_name(db_name)) {
+                std::cerr << "   [REJECTED] Invalid db_name: " << db_name << "\n";
+                char zero = 0;
+                if (!send_all(&zero, 1)) break;
+                continue;
+            }
 
             uint32_t requested_dim = 0;
             if (!recv_all((char*)&requested_dim, 4)) break;
@@ -155,8 +176,19 @@ void handle_client(int client_socket, SharedState& state) {
         // --- HANDSHAKE / CREATE HNSW DB ---
         if (cmd == CMD_CREATE_HNSW_DB) {
             uint32_t name_len = meta_data;
+            if (name_len > MAX_DB_NAME_LEN) {
+                std::cerr << "   [REJECTED] name_len=" << name_len << " exceeds limit\n";
+                break;
+            }
             std::string db_name(name_len, ' ');
             if (!recv_all(&db_name[0], (int)name_len)) break;
+
+            if (!is_valid_db_name(db_name)) {
+                std::cerr << "   [REJECTED] Invalid db_name: " << db_name << "\n";
+                char zero = 0;
+                if (!send_all(&zero, 1)) break;
+                continue;
+            }
 
             uint32_t requested_dim = 0;
             if (!recv_all((char*)&requested_dim, 4)) break;
