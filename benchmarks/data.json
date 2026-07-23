@@ -29,6 +29,21 @@
       "threads": 4,
       "num_vectors": 100000,
       "dimensions": 128
+    },
+    {
+      "commit": "d241037",
+      "date": "2026-07-23",
+      "message": "fix: send error response for unknown commands, prevent protocol desync (closes #68) (#129)",
+      "hnsw_insert_per_sec": 1911,
+      "hnsw_qps_1t": 32089,
+      "hnsw_qps_nt": 98852,
+      "hnsw_recall_100": 0.8636,
+      "ivf_insert_per_sec": 77856,
+      "ivf_qps_1t": 5303,
+      "ivf_qps_nt": 13614,
+      "threads": 4,
+      "num_vectors": 100000,
+      "dimensions": 128
     }
   ]
 }
