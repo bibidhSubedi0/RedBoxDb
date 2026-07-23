@@ -33,14 +33,16 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
           cmake --build build --target CiBench -j$(nproc)
 
-      - name: Run benchmarks (push to main)
+      - name: Run benchmarks and create PR
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 benchmark/ci_bench.py commit
+          python3 benchmark/ci_bench.py prepare
           BRANCH="bench/report-$(date +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
+          git add benchmarks/data.json benchmarks/REPORT.md
+          git commit -m "bench: update performance report [$(git rev-parse --short HEAD)] [skip ci]"
           git push origin "$BRANCH"
           gh pr create --title "bench: update performance report" \
             --body "Auto-generated benchmark report update." \
