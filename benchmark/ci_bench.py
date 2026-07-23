@@ -263,7 +263,7 @@ def git_commit(message):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: ci_bench.py [commit|pr]", file=sys.stderr)
+        print("Usage: ci_bench.py [commit|prepare|pr]", file=sys.stderr)
         sys.exit(1)
 
     mode = sys.argv[1]
@@ -274,7 +274,7 @@ def main():
     results = run_benchmark()
     print(f"Results: {json.dumps(results, indent=2)}", file=sys.stderr)
 
-    if mode == "commit":
+    if mode == "commit" or mode == "prepare":
         sha, msg = get_git_info()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -294,7 +294,8 @@ def main():
         with open(REPORT_FILE, "w") as f:
             f.write(report)
 
-        git_commit(f"bench: update performance report [{sha}] [skip ci]")
+        if mode == "commit":
+            git_commit(f"bench: update performance report [{sha}] [skip ci]")
         print(f"\nReport updated. {len(history['results'])} entries in history.", file=sys.stderr)
 
     elif mode == "pr":
