@@ -323,6 +323,11 @@ void handle_client(int client_socket, SharedState& state) {
             char resp = '1';
             if (!send_all(&resp, 1)) break;
         }
+        else {
+            std::cerr << "[SERVER] Unknown cmd=" << (int)cmd << " — sending error response\n";
+            char resp = '0';
+            if (!send_all(&resp, 1)) break;
+        }
     }
 
     } catch (const std::exception& e) {
