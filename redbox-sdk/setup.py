@@ -10,7 +10,7 @@ setup(
     url="https://github.com/bibidhSubedi0/RedBoxDb",
     packages=find_packages(),       # Finds the 'redboxdb' folder automatically
     install_requires=[
-        "numpy",                    # Auto-installs numpy for the user
+        "numpy>=1.24,<2.0",         # Auto-installs numpy for the user
     ],
     include_package_data=True,
     package_data={
