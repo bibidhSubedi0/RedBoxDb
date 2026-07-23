@@ -11,6 +11,7 @@ if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
 endif()
 
 include(cmake/StandardProjectSettings.cmake)
+include(cmake/Coverage.cmake)
 include(GNUInstallDirs)
 include(FetchContent)
 

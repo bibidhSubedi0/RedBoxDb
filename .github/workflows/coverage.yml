@@ -1,0 +1,57 @@
+name: Coverage
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install lcov
+        run: sudo apt-get update && sudo apt-get install -y lcov
+
+      - name: Configure CMake (Coverage build type)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Coverage -DCMAKE_CXX_COMPILER=g++
+
+      - name: Build
+        run: cmake --build build -j$(nproc) --target RedBoxDbTests
+
+      - name: Run C++ Unit Tests (GTest)
+        run: |
+          cd build/tests
+          ./RedBoxDbTests
+
+      - name: Capture coverage
+        run: |
+          lcov --directory build --capture --output-file coverage.info \
+            --ignore-errors mismatch,negative,gcov
+          # Drop third-party (FetchContent'd) sources, system headers, and
+          # the test files themselves -- we only want coverage of our own
+          # src/ and include/ code.
+          lcov --remove coverage.info \
+            '/usr/*' \
+            '*/build/_deps/*' \
+            '*/tests/*' \
+            '*/benchmark/*' \
+            --output-file coverage.filtered.info \
+            --ignore-errors unused
+          lcov --list coverage.filtered.info
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.filtered.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.filtered.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
