@@ -29,6 +29,21 @@
       "threads": 4,
       "num_vectors": 100000,
       "dimensions": 128
+    },
+    {
+      "commit": "e47eaee",
+      "date": "2026-07-23",
+      "message": "fix: benchmark CI - use PR-based flow instead of direct push (#130)",
+      "hnsw_insert_per_sec": 2000,
+      "hnsw_qps_1t": 43646,
+      "hnsw_qps_nt": 105640,
+      "hnsw_recall_100": 0.8654,
+      "ivf_insert_per_sec": 64739,
+      "ivf_qps_1t": 5652,
+      "ivf_qps_nt": 13665,
+      "threads": 4,
+      "num_vectors": 100000,
+      "dimensions": 128
     }
   ]
 }
