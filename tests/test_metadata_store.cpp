@@ -40,7 +40,8 @@ protected:
             GTEST_SKIP() << "PostgreSQL not available (set REDBOX_PG_* env vars)";
         }
         store = std::make_unique<Metadata::Store>(get_pg_conninfo(), 2);
-        store->run_migrations("sql/schema.sql");
+        std::string schema_path = std::string(REDBOX_SOURCE_DIR) + "/sql/schema.sql";
+        store->run_migrations(schema_path);
     }
 
     static void TearDownTestSuite() {

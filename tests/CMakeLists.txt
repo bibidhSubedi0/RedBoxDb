@@ -5,6 +5,8 @@ add_executable(RedBoxDbTests
     test_metadata_store.cpp
 )
 
+target_compile_definitions(RedBoxDbTests PRIVATE REDBOX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 target_link_libraries(RedBoxDbTests
     PRIVATE
         gtest
