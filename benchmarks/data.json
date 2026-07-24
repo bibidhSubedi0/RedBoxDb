@@ -44,6 +44,21 @@
       "threads": 4,
       "num_vectors": 100000,
       "dimensions": 128
+    },
+    {
+      "commit": "f23aa8c",
+      "date": "2026-07-24",
+      "message": "Pin FetchContent dependencies by hash (#98) (#132)",
+      "hnsw_insert_per_sec": 1852,
+      "hnsw_qps_1t": 32113,
+      "hnsw_qps_nt": 87335,
+      "hnsw_recall_100": 0.863,
+      "ivf_insert_per_sec": 77869,
+      "ivf_qps_1t": 5039,
+      "ivf_qps_nt": 12823,
+      "threads": 4,
+      "num_vectors": 100000,
+      "dimensions": 128
     }
   ]
 }
