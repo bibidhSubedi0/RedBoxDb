@@ -435,52 +435,54 @@ int main() {
 
     SharedState state;
 
-    // --- PostgreSQL metadata store ---
+    // --- PostgreSQL metadata store (optional) ---
     const char* pg_host     = std::getenv("REDBOX_PG_HOST");
     const char* pg_port     = std::getenv("REDBOX_PG_PORT");
     const char* pg_dbname   = std::getenv("REDBOX_PG_DBNAME");
     const char* pg_user     = std::getenv("REDBOX_PG_USER");
     const char* pg_password = std::getenv("REDBOX_PG_PASSWORD");
     const char* pg_data_dir = std::getenv("REDBOX_DATA_DIR");
-
-    std::string conninfo = "host=" + std::string(pg_host ? pg_host : "localhost")
-                         + " port=" + std::string(pg_port ? pg_port : "5432")
-                         + " dbname=" + std::string(pg_dbname ? pg_dbname : "redbox")
-                         + " user=" + std::string(pg_user ? pg_user : "redbox")
-                         + " password=" + std::string(pg_password ? pg_password : "");
     std::string data_dir = pg_data_dir ? pg_data_dir : ".";
 
-    try {
-        state.meta = new Metadata::Store(conninfo, 8);
-        state.meta->run_migrations("sql/schema.sql");
-        state.meta->seed_from_files(data_dir);
+    if (pg_host && pg_host[0] != '\0') {
+        std::string conninfo = "host=" + std::string(pg_host)
+                             + " port=" + std::string(pg_port ? pg_port : "5432")
+                             + " dbname=" + std::string(pg_dbname ? pg_dbname : "redbox")
+                             + " user=" + std::string(pg_user ? pg_user : "redbox")
+                             + " password=" + std::string(pg_password ? pg_password : "");
+        try {
+            state.meta = new Metadata::Store(conninfo, 8);
+            state.meta->run_migrations("sql/schema.sql");
+            state.meta->seed_from_files(data_dir);
 
-        // Hydrate in-memory catalog from PG
-        std::vector<Metadata::DbInfo> dbs;
-        state.meta->list_databases(dbs);
-        for (auto& db : dbs) {
-            CoreEngine::SpecificMetadata params;
-            state.meta->load_database(db.name, params);
-            std::string filename = data_dir + "/" + db.name + ".db";
-            std::lock_guard<std::mutex> lock(state.catalog_mutex);
-            if (params.index_type == static_cast<uint8_t>(CoreEngine::IndexType::HNSW)) {
-                state.catalog[db.name] = std::make_unique<CoreEngine::RedBoxVector>(
-                    filename, params.dimensions, (int)params.max_capacity,
-                    params.hnsw_M, params.hnsw_ef_construction);
-            } else {
-                state.catalog[db.name] = std::make_unique<CoreEngine::RedBoxVector>(
-                    filename, params.dimensions, (int)params.max_capacity,
-                    params.num_clusters, params.num_probes);
+            std::vector<Metadata::DbInfo> dbs;
+            state.meta->list_databases(dbs);
+            for (auto& db : dbs) {
+                CoreEngine::SpecificMetadata params;
+                state.meta->load_database(db.name, params);
+                std::string filename = data_dir + "/" + db.name + ".db";
+                std::lock_guard<std::mutex> lock(state.catalog_mutex);
+                if (params.index_type == static_cast<uint8_t>(CoreEngine::IndexType::HNSW)) {
+                    state.catalog[db.name] = std::make_unique<CoreEngine::RedBoxVector>(
+                        filename, params.dimensions, (int)params.max_capacity,
+                        params.hnsw_M, params.hnsw_ef_construction);
+                } else {
+                    state.catalog[db.name] = std::make_unique<CoreEngine::RedBoxVector>(
+                        filename, params.dimensions, (int)params.max_capacity,
+                        params.num_clusters, params.num_probes);
+                }
+                state.db_mutexes[db.name] = std::make_unique<std::mutex>();
+                std::cout << "[SERVER] Loaded DB from metadata: " << db.name
+                          << " (dim=" << db.dimensions << " count=" << db.vector_count << ")\n";
             }
-            state.db_mutexes[db.name] = std::make_unique<std::mutex>();
-            std::cout << "[SERVER] Loaded DB from metadata: " << db.name
-                      << " (dim=" << db.dimensions << " count=" << db.vector_count << ")\n";
+            std::cout << "[SERVER] PostgreSQL metadata store connected.\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[SERVER] WARNING: Failed to connect to PostgreSQL: " << e.what() << "\n";
+            std::cerr << "[SERVER] Running without metadata persistence.\n";
+            state.meta = nullptr;
         }
-    } catch (const std::exception& e) {
-        std::cerr << "[SERVER] Failed to connect to PostgreSQL: " << e.what() << "\n";
-        std::cerr << "[SERVER] Set REDBOX_PG_HOST, REDBOX_PG_PORT, REDBOX_PG_DBNAME, "
-                     "REDBOX_PG_USER, REDBOX_PG_PASSWORD env vars.\n";
-        return 1;
+    } else {
+        std::cout << "[SERVER] REDBOX_PG_HOST not set. Running without metadata persistence.\n";
     }
 
 #ifdef _WIN32
