@@ -19,13 +19,14 @@ find_package(Threads REQUIRED)
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG        v1.15.1
+    GIT_TAG        f355b3d58f7067eee1706ff3c801c2361011f3d5 # v1.15.1 -- pinned by commit hash, tags are mutable
 )
 FetchContent_MakeAvailable(spdlog)
 
 FetchContent_Declare(
     googletest
     URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+    URL_HASH SHA256=1f357c27ca988c3f7c6b4bf68a9395005ac6761f034046e9dde0896e3aba00e4
 )
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
