@@ -44,6 +44,21 @@
       "threads": 4,
       "num_vectors": 100000,
       "dimensions": 128
+    },
+    {
+      "commit": "6f25bdb",
+      "date": "2026-07-24",
+      "message": "Pin numpy version range in Python SDK (#116) (#133)",
+      "hnsw_insert_per_sec": 2231,
+      "hnsw_qps_1t": 52456,
+      "hnsw_qps_nt": 141960,
+      "hnsw_recall_100": 0.8652,
+      "ivf_insert_per_sec": 80613,
+      "ivf_qps_1t": 9690,
+      "ivf_qps_nt": 25876,
+      "threads": 4,
+      "num_vectors": 100000,
+      "dimensions": 128
     }
   ]
 }
