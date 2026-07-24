@@ -16,9 +16,15 @@
 #include <thread>
 #include <mutex>
 #include "redboxdb/engine.hpp"
+#ifdef REDBOX_PG_ENABLED
+#include "redboxdb/metadata_store.hpp"
+#else
+namespace Metadata { class Store; struct DbInfo {}; }
+#endif
 #include <filesystem>
 #include <cstring>
 #include <cctype>
+#include <cstdlib>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -52,6 +58,8 @@ const uint8_t CMD_DROP_DB  = 8;
 const uint8_t CMD_SET_PROBES = 9;
 const uint8_t CMD_CREATE_HNSW_DB = 10;
 const uint8_t CMD_SET_HNSW_EF = 11;
+const uint8_t CMD_LIST_DBS = 12;
+const uint8_t CMD_DB_INFO = 13;
 
 constexpr size_t MAX_DB_NAME_LEN = 64;
 inline bool is_valid_db_name(const std::string& name) {
@@ -69,7 +77,8 @@ using MutexMap = std::unordered_map<std::string, std::unique_ptr<std::mutex>>;
 struct SharedState {
     DbCatalog  catalog;
     MutexMap   db_mutexes;
-    std::mutex catalog_mutex; // guards catalog + db_mutexes maps themselves
+    std::mutex catalog_mutex;
+    Metadata::Store* meta = nullptr;
 };
 
 // -----------------------------------------------------------------------
@@ -86,6 +95,7 @@ void handle_client(int client_socket, SharedState& state) {
 
     CoreEngine::RedBoxVector* active_db = nullptr;
     std::mutex* active_mtx = nullptr;
+    std::string active_db_name;
 
     char header_buffer[5];
 
@@ -158,10 +168,19 @@ void handle_client(int client_socket, SharedState& state) {
                     state.catalog[db_name] = std::make_unique<CoreEngine::RedBoxVector>(
                         filename, requested_dim, (int)requested_capacity);
                     state.db_mutexes[db_name] = std::make_unique<std::mutex>();
+
+#ifdef REDBOX_PG_ENABLED
+                    if (state.meta) {
+                        state.meta->create_database(db_name, requested_dim,
+                            CoreEngine::IndexType::IVF, requested_capacity,
+                            *state.catalog[db_name]->get_header());
+                    }
+#endif
                 }
 
                 active_db = state.catalog[db_name].get();
                 active_mtx = state.db_mutexes[db_name].get();
+                active_db_name = db_name;
             }
 
             if (active_db->get_dim() != requested_dim) {
@@ -211,9 +230,18 @@ void handle_client(int client_socket, SharedState& state) {
                         filename, requested_dim, (int)requested_capacity,
                         hnsw_M, hnsw_ef_construction);
                     state.db_mutexes[db_name] = std::make_unique<std::mutex>();
+
+#ifdef REDBOX_PG_ENABLED
+                    if (state.meta) {
+                        state.meta->create_database(db_name, requested_dim,
+                            CoreEngine::IndexType::HNSW, requested_capacity,
+                            *state.catalog[db_name]->get_header());
+                    }
+#endif
                 }
                 active_db = state.catalog[db_name].get();
                 active_mtx = state.db_mutexes[db_name].get();
+                active_db_name = db_name;
             }
 
             if (!send_all("1", 1)) break;
@@ -229,6 +257,12 @@ void handle_client(int client_socket, SharedState& state) {
             std::vector<float> vec(current_dim);
             if (!recv_all((char*)vec.data(), vec_byte_size)) break;
             { std::lock_guard<std::mutex> lk(*active_mtx); active_db->insert(meta_data, vec); }
+#ifdef REDBOX_PG_ENABLED
+            if (state.meta) {
+                state.meta->update_counts(active_db_name, active_db->get_count(), active_db->get_next_id());
+                state.meta->log_operation(active_db_name, "INSERT", meta_data);
+            }
+#endif
             if (!send_all("1", 1)) break;
         }
         else if (cmd == CMD_SEARCH) {
@@ -236,11 +270,22 @@ void handle_client(int client_socket, SharedState& state) {
             if (!recv_all((char*)query.data(), vec_byte_size)) break;
             int result_id;
             { std::lock_guard<std::mutex> lk(*active_mtx); result_id = active_db->search(query); }
+#ifdef REDBOX_PG_ENABLED
+            if (state.meta) {
+                state.meta->log_operation(active_db_name, "SEARCH", 0);
+            }
+#endif
             if (!send_all((char*)&result_id, 4)) break;
         }
         else if (cmd == CMD_DELETE) {
             bool success;
             { std::lock_guard<std::mutex> lk(*active_mtx); success = active_db->remove(meta_data); }
+#ifdef REDBOX_PG_ENABLED
+            if (success && state.meta) {
+                state.meta->update_counts(active_db_name, active_db->get_count(), active_db->get_next_id());
+                state.meta->log_operation(active_db_name, "DELETE", meta_data);
+            }
+#endif
             char resp = success ? '1' : '0';
             if (!send_all(&resp, 1)) break;
         }
@@ -249,6 +294,11 @@ void handle_client(int client_socket, SharedState& state) {
             if (!recv_all((char*)vec.data(), vec_byte_size)) break;
             bool success;
             { std::lock_guard<std::mutex> lk(*active_mtx); success = active_db->update(meta_data, vec); }
+#ifdef REDBOX_PG_ENABLED
+            if (success && state.meta) {
+                state.meta->log_operation(active_db_name, "UPDATE", meta_data);
+            }
+#endif
             char resp = success ? '1' : '0';
             if (!send_all(&resp, 1)) break;
         }
@@ -257,6 +307,12 @@ void handle_client(int client_socket, SharedState& state) {
             if (!recv_all((char*)vec.data(), vec_byte_size)) break;
             uint64_t assigned_id;
             { std::lock_guard<std::mutex> lk(*active_mtx); assigned_id = active_db->insert_auto(vec); }
+#ifdef REDBOX_PG_ENABLED
+            if (state.meta) {
+                state.meta->update_counts(active_db_name, active_db->get_count(), active_db->get_next_id());
+                state.meta->log_operation(active_db_name, "INSERT_AUTO", assigned_id);
+            }
+#endif
             if (!send_all((char*)&assigned_id, sizeof(assigned_id))) break;
         }
         else if (cmd == CMD_SEARCH_N) {
@@ -290,14 +346,18 @@ void handle_client(int client_socket, SharedState& state) {
                     }
                 }
                 if (!db_to_drop.empty()) {
-                    // Erase from catalog — unique_ptr destructor cleans up the engine
+#ifdef REDBOX_PG_ENABLED
+                    if (state.meta) {
+                        state.meta->drop_database(db_to_drop);
+                    }
+#endif
                     state.catalog.erase(db_to_drop);
                     state.db_mutexes.erase(db_to_drop);
-                    // Delete the .db file from disk
                     std::filesystem::remove(db_to_drop + ".db");
                     std::filesystem::remove(db_to_drop + ".db.del");
                     active_db  = nullptr;
                     active_mtx = nullptr;
+                    active_db_name.clear();
                     success    = true;
                 }
             }
@@ -322,6 +382,57 @@ void handle_client(int client_socket, SharedState& state) {
             }
             char resp = '1';
             if (!send_all(&resp, 1)) break;
+        }
+        else if (cmd == CMD_LIST_DBS) {
+#ifdef REDBOX_PG_ENABLED
+            if (!state.meta) {
+                uint32_t count = 0;
+                if (!send_all((char*)&count, sizeof(count))) break;
+            } else {
+                std::vector<Metadata::DbInfo> dbs;
+                state.meta->list_databases(dbs);
+                uint32_t count = static_cast<uint32_t>(dbs.size());
+                if (!send_all((char*)&count, sizeof(count))) break;
+                for (auto& db : dbs) {
+                    uint8_t name_len = static_cast<uint8_t>(db.name.size());
+                    if (!send_all((char*)&name_len, 1)) break;
+                    if (!send_all(db.name.c_str(), name_len)) break;
+                    if (!send_all((char*)&db.dimensions, sizeof(db.dimensions))) break;
+                    uint8_t idx = static_cast<uint8_t>(db.index_type);
+                    if (!send_all((char*)&idx, 1)) break;
+                    if (!send_all((char*)&db.vector_count, sizeof(db.vector_count))) break;
+                }
+            }
+#else
+            uint32_t count = 0;
+            if (!send_all((char*)&count, sizeof(count))) break;
+#endif
+            continue;
+        }
+        else if (cmd == CMD_DB_INFO) {
+#ifndef REDBOX_PG_ENABLED
+            char zero = 0;
+            if (!send_all(&zero, 1)) break;
+#else
+            if (!active_db || !state.meta) {
+                char zero = 0;
+                if (!send_all(&zero, 1)) break;
+            } else {
+                char ok = 1;
+                if (!send_all(&ok, 1)) break;
+                uint64_t vc = active_db->get_count();
+                uint64_t cap = active_db->get_header()->max_capacity;
+                uint64_t nid = active_db->get_next_id();
+                uint8_t idx = static_cast<uint8_t>(active_db->get_index_type());
+                uint32_t dim = active_db->get_dim();
+                if (!send_all((char*)&vc, sizeof(vc))) break;
+                if (!send_all((char*)&cap, sizeof(cap))) break;
+                if (!send_all((char*)&nid, sizeof(nid))) break;
+                if (!send_all((char*)&idx, 1)) break;
+                if (!send_all((char*)&dim, sizeof(dim))) break;
+            }
+#endif
+            continue;
         }
         else {
             std::cerr << "[SERVER] Unknown cmd=" << (int)cmd << " — sending error response\n";
@@ -353,6 +464,60 @@ int main() {
 #endif
 
     SharedState state;
+
+    // --- PostgreSQL metadata store (optional) ---
+#ifdef REDBOX_PG_ENABLED
+    const char* pg_host     = std::getenv("REDBOX_PG_HOST");
+    const char* pg_port     = std::getenv("REDBOX_PG_PORT");
+    const char* pg_dbname   = std::getenv("REDBOX_PG_DBNAME");
+    const char* pg_user     = std::getenv("REDBOX_PG_USER");
+    const char* pg_password = std::getenv("REDBOX_PG_PASSWORD");
+    const char* pg_data_dir = std::getenv("REDBOX_DATA_DIR");
+    std::string data_dir = pg_data_dir ? pg_data_dir : ".";
+
+    if (pg_host && pg_host[0] != '\0') {
+        std::string conninfo = "host=" + std::string(pg_host)
+                             + " port=" + std::string(pg_port ? pg_port : "5432")
+                             + " dbname=" + std::string(pg_dbname ? pg_dbname : "redbox")
+                             + " user=" + std::string(pg_user ? pg_user : "redbox")
+                             + " password=" + std::string(pg_password ? pg_password : "");
+        try {
+            state.meta = new Metadata::Store(conninfo, 8);
+            state.meta->run_migrations("sql/schema.sql");
+            state.meta->seed_from_files(data_dir);
+
+            std::vector<Metadata::DbInfo> dbs;
+            state.meta->list_databases(dbs);
+            for (auto& db : dbs) {
+                CoreEngine::SpecificMetadata params;
+                state.meta->load_database(db.name, params);
+                std::string filename = data_dir + "/" + db.name + ".db";
+                std::lock_guard<std::mutex> lock(state.catalog_mutex);
+                if (params.index_type == static_cast<uint8_t>(CoreEngine::IndexType::HNSW)) {
+                    state.catalog[db.name] = std::make_unique<CoreEngine::RedBoxVector>(
+                        filename, params.dimensions, (int)params.max_capacity,
+                        params.hnsw_M, params.hnsw_ef_construction);
+                } else {
+                    state.catalog[db.name] = std::make_unique<CoreEngine::RedBoxVector>(
+                        filename, params.dimensions, (int)params.max_capacity,
+                        params.num_clusters, params.num_probes);
+                }
+                state.db_mutexes[db.name] = std::make_unique<std::mutex>();
+                std::cout << "[SERVER] Loaded DB from metadata: " << db.name
+                          << " (dim=" << db.dimensions << " count=" << db.vector_count << ")\n";
+            }
+            std::cout << "[SERVER] PostgreSQL metadata store connected.\n";
+        } catch (const std::exception& e) {
+            std::cerr << "[SERVER] WARNING: Failed to connect to PostgreSQL: " << e.what() << "\n";
+            std::cerr << "[SERVER] Running without metadata persistence.\n";
+            state.meta = nullptr;
+        }
+    } else {
+        std::cout << "[SERVER] REDBOX_PG_HOST not set. Running without metadata persistence.\n";
+    }
+#else
+    std::cout << "[SERVER] PostgreSQL support not compiled in. Running without metadata persistence.\n";
+#endif
 
 #ifdef _WIN32
     SOCKET server_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -401,6 +566,9 @@ int main() {
     }
 
     closesocket(server_socket);
+#ifdef REDBOX_PG_ENABLED
+    delete state.meta;
+#endif
 #ifdef _WIN32
     WSACleanup();
 #endif
@@ -425,8 +593,18 @@ int main() {
 
 
     CMD ID    Name        META Field        Payload                              Server Response
-    1        INSERT        Vector ID        Raw Float Data(Dim�4 bytes)          1 (Ack)
-    2        SEARCH        (Ignored)        Raw Float Data (Dim�4 bytes)        Result ID (4 bytes)
+    1        INSERT        Vector ID        Raw Float Data(Dim*4 bytes)          1 (Ack)
+    2        SEARCH        (Ignored)        Raw Float Data (Dim*4 bytes)        Result ID (4 bytes)
     3        DELETE        Vector ID        (None)                               1 or 0 (Success/Fail)
     4        SELECT_DB     Name Length      Database Name (UTF-8 String)         1 (Ack)
+    5        UPDATE        Vector ID        Raw Float Data (Dim*4 bytes)        1 or 0 (Success/Fail)
+    6        INSERT_AUTO   (Ignored)        Raw Float Data (Dim*4 bytes)        Assigned ID (8 bytes)
+    7        SEARCH_N      N (count)        Raw Float Data (Dim*4 bytes)        Count(4) + IDs(4*N)
+    8        DROP_DB       (Ignored)        (None)                               1 or 0
+    9        SET_PROBES    Probe count      (None)                               1 (Ack)
+    10       CREATE_HNSW   Name Length      Name + Dim(4) + Cap(4) + M(1) +     1 (Ack)
+                                            ef_c(2)
+    11       SET_HNSW_EF   ef value         (None)                               1 (Ack)
+    12       LIST_DBS      (Ignored)        (None)                               Count(4) + Entries
+    13       DB_INFO       (Ignored)        (None)                               OK(1) + VC(8)+Cap(8)+NID(8)+Type(1)+Dim(4)
 */

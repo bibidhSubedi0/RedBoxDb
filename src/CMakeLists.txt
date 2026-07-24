@@ -8,12 +8,20 @@ target_sources(RedBoxDbLib
         engine.cpp
  )
 
+if(REDBOX_ENABLE_PG)
+    target_sources(RedBoxDbLib PRIVATE metadata_store.cpp)
+endif()
+
 target_include_directories(RedBoxDbLib
     PUBLIC
         ${PROJECT_SOURCE_DIR}/include
 )
 
 target_link_libraries(RedBoxDbLib PRIVATE spdlog::spdlog Threads::Threads)
+
+if(REDBOX_ENABLE_PG)
+    target_link_libraries(RedBoxDbLib PRIVATE pqxx PostgreSQL::PostgreSQL)
+endif()
 
 include(CheckCXXCompilerFlag)
 
@@ -62,6 +70,10 @@ target_link_libraries(RedBoxServer
         spdlog::spdlog
         Threads::Threads
 )
+
+if(REDBOX_ENABLE_PG)
+    target_link_libraries(RedBoxServer PRIVATE pqxx PostgreSQL::PostgreSQL)
+endif()
 
 # Only link Winsock on Windows
 if(WIN32)

@@ -74,6 +74,12 @@ namespace CoreEngine {
         void     set_hnsw_ef_search(uint16_t ef);
         void     warm_pages();
 
+        uint64_t get_count() const { return _manager->get_count(); }
+        uint64_t get_next_id() const { return _manager->get_header()->next_id; }
+        void     set_next_id(uint64_t id) { _manager->get_header()->next_id = id; }
+        void     set_vector_count(uint64_t c) { _manager->get_header()->vector_count = c; }
+        CoreEngine::SpecificMetadata* get_header() { return _manager->get_header(); }
+
         // Tombstone helpers
         void load_tombstones();
         void append_tombstone(uint64_t id);

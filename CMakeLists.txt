@@ -32,6 +32,29 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+option(REDBOX_ENABLE_PG "Enable PostgreSQL metadata store" ON)
+
+if(REDBOX_ENABLE_PG)
+    find_package(PostgreSQL)
+    if(PostgreSQL_FOUND)
+        FetchContent_Declare(
+            libpqxx
+            GIT_REPOSITORY https://github.com/jtv/libpqxx.git
+            GIT_TAG        8.0.2
+        )
+        set(PQXX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(PQXX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(libpqxx)
+        add_compile_definitions(REDBOX_PG_ENABLED)
+        message(STATUS "PostgreSQL support: ENABLED")
+    else()
+        set(REDBOX_ENABLE_PG OFF)
+        message(STATUS "PostgreSQL not found: metadata store DISABLED")
+    endif()
+else()
+    message(STATUS "PostgreSQL support: DISABLED (REDBOX_ENABLE_PG=OFF)")
+endif()
+
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(benchmark)

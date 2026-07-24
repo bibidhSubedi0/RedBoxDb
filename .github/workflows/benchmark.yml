@@ -47,7 +47,7 @@ jobs:
           gh pr create --title "bench: update performance report" \
             --body "Auto-generated benchmark report update." \
             --base master --head "$BRANCH"
-          gh pr merge --auto --squash
+          gh pr merge --auto --squash || echo "Auto-merge not available (enable in repo settings)"
 
       - name: Run benchmarks and post comment (PR)
         if: github.event_name == 'pull_request'
@@ -56,6 +56,6 @@ jobs:
           echo "$COMMENT" > /tmp/bench_comment.md
           gh pr comment ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
-            --body-file /tmp/bench_comment.md
+            --body-file /tmp/bench_comment.md || echo "Could not post comment (fork PR or permission issue)"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

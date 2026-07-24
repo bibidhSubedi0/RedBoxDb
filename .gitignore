@@ -379,3 +379,6 @@ venv/
 *.db
 *.del
 build_mingw.vscode/
+
+build-profile/
+.vscode/

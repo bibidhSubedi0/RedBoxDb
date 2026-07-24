@@ -13,6 +13,8 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
 
+    env:
+      REDBOX_DATA_DIR: /tmp/redbox_data
     steps:
     # 1. Checkout Code
     - uses: actions/checkout@v4
@@ -26,20 +28,60 @@ jobs:
     - name: Install Python Dependencies
       run: pip install "numpy>=1.24,<2.0"
 
-    # 3. Configure CMake
+    # 3. Start PostgreSQL (Linux only)
+    - name: Start PostgreSQL (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update && sudo apt-get install -y libpq-dev postgresql
+        sudo systemctl start postgresql
+        sudo -u postgres psql -c "CREATE USER redbox WITH PASSWORD 'test';"
+        sudo -u postgres psql -c "CREATE DATABASE redbox_test OWNER redbox;"
+      env:
+        PGHOST: /var/run/postgresql
+
+    - name: Set PG env vars (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        echo "REDBOX_PG_HOST=localhost" >> $GITHUB_ENV
+        echo "REDBOX_PG_PORT=5432" >> $GITHUB_ENV
+        echo "REDBOX_PG_DBNAME=redbox_test" >> $GITHUB_ENV
+        echo "REDBOX_PG_USER=redbox" >> $GITHUB_ENV
+        echo "REDBOX_PG_PASSWORD=test" >> $GITHUB_ENV
+
+    - name: Set PG env vars (Windows - skip)
+      if: runner.os == 'Windows'
+      run: |
+        echo "REDBOX_PG_HOST=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_PORT=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_DBNAME=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_USER=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_PASSWORD=" >> $env:GITHUB_ENV
+        echo "REDBOX_DATA_DIR=C:\temp\redbox_data" >> $env:GITHUB_ENV
+
+    # 4. Configure CMake
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
-      run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+      run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ -DREDBOX_ENABLE_PG=OFF
 
     - name: Configure CMake (Linux)
       if: runner.os == 'Linux'
       run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
 
-    # 4. Build the Server & Tests
+    # 5. Build the Server & Tests
     - name: Build Project
       run: cmake --build build
 
-    # 5. Run C++ Unit Tests (GTest)
+    # 6. Create data directory
+    - name: Create data directory (Linux)
+      if: runner.os == 'Linux'
+      run: mkdir -p /tmp/redbox_data
+
+    - name: Create data directory (Windows)
+      if: runner.os == 'Windows'
+      run: mkdir -force C:\temp\redbox_data
+      shell: powershell
+
+    # 7. Run C++ Unit Tests (GTest)
     - name: Run C++ Unit Tests (Windows)
       if: runner.os == 'Windows'
       run: |
@@ -52,7 +94,7 @@ jobs:
         cd build/tests
         ./RedBoxDbTests
 
-    # 6. Run Python Integration Tests
+    # 8. Run Python Integration Tests
     - name: Run System Verification (Windows)
       if: runner.os == 'Windows'
       shell: powershell
