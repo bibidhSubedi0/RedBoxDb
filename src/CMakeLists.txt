@@ -6,6 +6,7 @@ add_library(RedBoxDbLib)
 target_sources(RedBoxDbLib
     PRIVATE
         engine.cpp
+        metadata_store.cpp
  )
 
 target_include_directories(RedBoxDbLib
@@ -13,7 +14,7 @@ target_include_directories(RedBoxDbLib
         ${PROJECT_SOURCE_DIR}/include
 )
 
-target_link_libraries(RedBoxDbLib PRIVATE spdlog::spdlog Threads::Threads)
+target_link_libraries(RedBoxDbLib PRIVATE spdlog::spdlog Threads::Threads pqxx PostgreSQL::PostgreSQL)
 
 include(CheckCXXCompilerFlag)
 

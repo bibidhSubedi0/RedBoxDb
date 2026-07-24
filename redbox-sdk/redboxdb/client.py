@@ -199,6 +199,70 @@ class RedBoxClient:
         resp = self.sock.recv(1)
         return resp == b'1'
 
+    def list_databases(self) -> List[dict]:
+        """
+        List all databases in the metadata store.
+        Protocol: [CMD=12] [0]
+        Returns: List of dicts with name, dimensions, index_type, vector_count.
+        """
+        header = struct.pack('<BI', 12, 0)
+        self.sock.sendall(header)
+
+        count_bytes = self._recv_exact(4)
+        count = struct.unpack('<I', count_bytes)[0]
+
+        dbs = []
+        for _ in range(count):
+            name_len = struct.unpack('B', self._recv_exact(1))[0]
+            name = self._recv_exact(name_len).decode('utf-8')
+            dim = struct.unpack('<I', self._recv_exact(4))[0]
+            idx_type = struct.unpack('B', self._recv_exact(1))[0]
+            vec_count = struct.unpack('<Q', self._recv_exact(8))[0]
+            dbs.append({
+                'name': name,
+                'dimensions': dim,
+                'index_type': 'HNSW' if idx_type == 1 else 'IVF',
+                'vector_count': vec_count,
+            })
+        return dbs
+
+    def database_info(self) -> dict:
+        """
+        Get metadata for the active database.
+        Protocol: [CMD=13] [0]
+        Returns: dict with vector_count, capacity, next_id, index_type, dimensions.
+        """
+        header = struct.pack('<BI', 13, 0)
+        self.sock.sendall(header)
+
+        ok = self._recv_exact(1)
+        if ok != b'\x01':
+            raise RuntimeError("database_info failed: no active database")
+
+        vc = struct.unpack('<Q', self._recv_exact(8))[0]
+        cap = struct.unpack('<Q', self._recv_exact(8))[0]
+        nid = struct.unpack('<Q', self._recv_exact(8))[0]
+        idx_type = struct.unpack('B', self._recv_exact(1))[0]
+        dim = struct.unpack('<I', self._recv_exact(4))[0]
+
+        return {
+            'vector_count': vc,
+            'capacity': cap,
+            'next_id': nid,
+            'index_type': 'HNSW' if idx_type == 1 else 'IVF',
+            'dimensions': dim,
+        }
+
+    def _recv_exact(self, n: int) -> bytes:
+        """Receive exactly n bytes from the socket."""
+        buf = b''
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("Connection closed while reading response.")
+            buf += chunk
+        return buf
+
     def close(self):
         """Cleanly close the connection."""
         if self.sock:

@@ -2,6 +2,7 @@ add_executable(RedBoxDbTests
     test_main.cpp
     test_hnsw.cpp
     test_extended.cpp
+    test_metadata_store.cpp
 )
 
 target_link_libraries(RedBoxDbTests
@@ -10,6 +11,8 @@ target_link_libraries(RedBoxDbTests
         gtest_main
         RedBoxDbLib
         spdlog::spdlog
+        pqxx
+        PostgreSQL::PostgreSQL
 )
 
 set_project_warnings(RedBoxDbTests)

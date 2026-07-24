@@ -32,6 +32,17 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+find_package(PostgreSQL REQUIRED)
+
+FetchContent_Declare(
+    libpqxx
+    GIT_REPOSITORY https://github.com/jtv/libpqxx.git
+    GIT_TAG        8.0.2
+)
+set(PQXX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(PQXX_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(libpqxx)
+
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(benchmark)
