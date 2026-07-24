@@ -13,27 +13,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: redbox_test
-          POSTGRES_USER: redbox
-          POSTGRES_PASSWORD: test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     env:
-      REDBOX_PG_HOST: localhost
-      REDBOX_PG_PORT: "5432"
-      REDBOX_PG_DBNAME: redbox_test
-      REDBOX_PG_USER: redbox
-      REDBOX_PG_PASSWORD: test
       REDBOX_DATA_DIR: /tmp/redbox_data
 
     steps:
@@ -49,10 +29,34 @@ jobs:
     - name: Install Python Dependencies
       run: pip install "numpy>=1.24,<2.0"
 
-    # 3. Install PostgreSQL dev libraries (Linux)
-    - name: Install libpq-dev (Linux)
+    # 3. Start PostgreSQL (Linux only)
+    - name: Start PostgreSQL (Linux)
       if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y libpq-dev postgresql-client
+      run: |
+        sudo apt-get update && sudo apt-get install -y libpq-dev postgresql
+        sudo systemctl start postgresql
+        sudo -u postgres psql -c "CREATE USER redbox WITH PASSWORD 'test';"
+        sudo -u postgres psql -c "CREATE DATABASE redbox_test OWNER redbox;"
+      env:
+        PGHOST: /var/run/postgresql
+
+    - name: Set PG env vars (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        echo "REDBOX_PG_HOST=localhost" >> $GITHUB_ENV
+        echo "REDBOX_PG_PORT=5432" >> $GITHUB_ENV
+        echo "REDBOX_PG_DBNAME=redbox_test" >> $GITHUB_ENV
+        echo "REDBOX_PG_USER=redbox" >> $GITHUB_ENV
+        echo "REDBOX_PG_PASSWORD=test" >> $GITHUB_ENV
+
+    - name: Set PG env vars (Windows - skip)
+      if: runner.os == 'Windows'
+      run: |
+        echo "REDBOX_PG_HOST=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_PORT=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_DBNAME=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_USER=" >> $env:GITHUB_ENV
+        echo "REDBOX_PG_PASSWORD=" >> $env:GITHUB_ENV
 
     # 4. Configure CMake
     - name: Configure CMake (Windows)
