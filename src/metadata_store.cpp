@@ -9,17 +9,6 @@
 
 #include <redboxdb/SpecificMetadata.hpp>
 
-#ifndef _WIN32
-    #include <sys/mman.h>
-    #include <sys/stat.h>
-    #include <fcntl.h>
-    #include <unistd.h>
-#else
-    #include <windows.h>
-    #include <fcntl.h>
-    #include <io.h>
-#endif
-
 namespace Metadata {
 
 struct Store::Impl {
@@ -220,25 +209,12 @@ void Store::seed_from_files(const std::string& data_dir) {
         std::string db_name = entry.path().stem().string();
         if (known.count(db_name)) continue;
 
-        int fd = open(path.c_str(), O_RDONLY);
-        if (fd < 0) continue;
+        std::ifstream ifs(path, std::ios::binary);
+        if (!ifs) continue;
 
-        struct stat st;
-        if (fstat(fd, &st) < 0 || st.st_size < 128) {
-            close(fd);
-            continue;
-        }
-
-        void* map = mmap(nullptr, 128, PROT_READ, MAP_PRIVATE, fd, 0);
-        if (map == MAP_FAILED) {
-            close(fd);
-            continue;
-        }
-
-        CoreEngine::SpecificMetadata header;
-        memcpy(&header, map, sizeof(header));
-        munmap(map, 128);
-        close(fd);
+        CoreEngine::SpecificMetadata header{};
+        ifs.read(reinterpret_cast<char*>(&header), sizeof(header));
+        if (ifs.gcount() < static_cast<std::streamsize>(sizeof(header))) continue;
 
         std::cout << "[METADATA] Seeding from file: " << db_name
                   << " (dim=" << header.dimensions
