@@ -1,9 +1,14 @@
-add_executable(RedBoxDbTests
+set(TEST_SOURCES
     test_main.cpp
     test_hnsw.cpp
     test_extended.cpp
-    test_metadata_store.cpp
 )
+
+if(REDBOX_ENABLE_PG)
+    list(APPEND TEST_SOURCES test_metadata_store.cpp)
+endif()
+
+add_executable(RedBoxDbTests ${TEST_SOURCES})
 
 target_compile_definitions(RedBoxDbTests PRIVATE REDBOX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
@@ -13,9 +18,11 @@ target_link_libraries(RedBoxDbTests
         gtest_main
         RedBoxDbLib
         spdlog::spdlog
-        pqxx
-        PostgreSQL::PostgreSQL
 )
+
+if(REDBOX_ENABLE_PG)
+    target_link_libraries(RedBoxDbTests PRIVATE pqxx PostgreSQL::PostgreSQL)
+endif()
 
 set_project_warnings(RedBoxDbTests)
 

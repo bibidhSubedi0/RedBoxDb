@@ -61,7 +61,7 @@ jobs:
     # 4. Configure CMake
     - name: Configure CMake (Windows)
       if: runner.os == 'Windows'
-      run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+      run: cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++ -DREDBOX_ENABLE_PG=OFF
 
     - name: Configure CMake (Linux)
       if: runner.os == 'Linux'
