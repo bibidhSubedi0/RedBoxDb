@@ -53,13 +53,13 @@ class RedBoxClient:
             raise RuntimeError("Server rejected handshake or disconnected.")
 
     def _recv_exact(self, n: int) -> bytes:
-        buf = b''
+        buf = bytearray()
         while len(buf) < n:
             chunk = self.sock.recv(n - len(buf))
             if not chunk:
                 raise ConnectionError("Server disconnected mid-response")
-            buf += chunk
-        return buf
+            buf.extend(chunk)
+        return bytes(buf)
 
     def _validate_vector(self, vector: Union[np.ndarray, List[float]]) -> bytes:
         if isinstance(vector, list):
