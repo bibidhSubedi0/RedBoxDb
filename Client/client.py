@@ -23,12 +23,13 @@ class RedBoxClient:
     CMD_CREATE_HNSW_DB = 10
     CMD_SET_HNSW_EF = 11
 
-    def __init__(self, host: str = '127.0.0.1', port: int = 8080, db_name: str = 'default', dim: int = 128, capacity: int=100_000):
+    def __init__(self, host: str = '127.0.0.1', port: int = 8080, db_name: str = 'default', dim: int = 128, capacity: int=100_000, timeout: float = 30.0):
         self.host    = host
         self.port    = port
         self.dim     = dim
         self.db_name = db_name
         self.capacity = capacity
+        self.timeout = timeout
         self.sock: Optional[socket.socket] = None
 
         self._connect()
@@ -38,10 +39,13 @@ class RedBoxClient:
     def _connect(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.sock.settimeout(self.timeout)
         try:
             self.sock.connect((self.host, self.port))
         except ConnectionRefusedError:
             raise ConnectionError(f"Could not connect to RedBoxDb at {self.host}:{self.port}. Is the server running?")
+        except socket.timeout:
+            raise ConnectionError(f"Timed out connecting to RedBoxDb at {self.host}:{self.port} after {self.timeout}s.")
 
     def _handshake(self, name: str, dim: int, capacity: int):
         name_bytes = name.encode('utf-8')
@@ -136,7 +140,8 @@ class RedBoxClient:
     def create_hnsw(cls, host: str = '127.0.0.1', port: int = 8080,
                     db_name: str = 'default', dim: int = 128,
                     capacity: int = 100_000,
-                    hnsw_M: int = 16, hnsw_ef_construction: int = 200):
+                    hnsw_M: int = 16, hnsw_ef_construction: int = 200,
+                    timeout: float = 30.0):
         """Create a new client connected to an HNSW database."""
         client = cls.__new__(cls)
         client.host = host
@@ -144,6 +149,7 @@ class RedBoxClient:
         client.dim = dim
         client.db_name = db_name
         client.capacity = capacity
+        client.timeout = timeout
         client.sock = None
 
         client._connect()
