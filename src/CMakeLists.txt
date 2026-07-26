@@ -14,10 +14,23 @@ endif()
 
 target_include_directories(RedBoxDbLib
     PUBLIC
-        ${PROJECT_SOURCE_DIR}/include
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-target_link_libraries(RedBoxDbLib PRIVATE spdlog::spdlog Threads::Threads)
+# spdlog is PUBLIC, not PRIVATE: include/redboxdb/logger.hpp (a public
+# header) includes <spdlog/spdlog.h> directly, so anything that includes
+# our headers needs spdlog's include paths too. This also matters for the
+# installed package config (cmake/RedBoxDbConfig.cmake.in), which declares
+# spdlog as a find_dependency() that consumers must have available.
+target_link_libraries(RedBoxDbLib PUBLIC spdlog::spdlog PRIVATE Threads::Threads)
+
+install(
+    TARGETS RedBoxDbLib
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 
 if(REDBOX_ENABLE_PG)
     target_link_libraries(RedBoxDbLib PRIVATE pqxx PostgreSQL::PostgreSQL)
@@ -59,6 +72,8 @@ target_link_libraries(RedBoxDb
 
 set_project_warnings(RedBoxDb)
 
+install(TARGETS RedBoxDb RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 # =========================
 # RedBoxServer (The TCP Service)
 # =========================
@@ -81,3 +96,5 @@ if(WIN32)
 endif()
 
 set_project_warnings(RedBoxServer)
+
+install(TARGETS RedBoxServer RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

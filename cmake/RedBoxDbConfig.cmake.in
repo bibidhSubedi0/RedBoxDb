@@ -1,0 +1,28 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+# RedBoxDb::RedBoxDbLib publicly depends on spdlog (logger.hpp is a public
+# header that includes <spdlog/spdlog.h>). Consumers need spdlog findable
+# via find_package(spdlog) -- e.g. installed system-wide, via a package
+# manager (vcpkg/conan), or fetched by the consumer's own CMake project.
+find_dependency(spdlog)
+
+set_and_check(REDBOXDB_INCLUDE_DIR "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+set_and_check(REDBOXDB_LIB_DIR "@PACKAGE_CMAKE_INSTALL_LIBDIR@")
+
+# Hand-written IMPORTED target rather than install(EXPORT ...): RedBoxDbLib
+# is a static library that (transitively, via spdlog) depends on a target
+# fetched with FetchContent rather than found with find_package, so it
+# can't be placed in the same export set as spdlog itself. This is the
+# standard fallback for that situation.
+if(NOT TARGET RedBoxDb::RedBoxDbLib)
+    add_library(RedBoxDb::RedBoxDbLib STATIC IMPORTED)
+    set_target_properties(RedBoxDb::RedBoxDbLib PROPERTIES
+        IMPORTED_LOCATION "${REDBOXDB_LIB_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}RedBoxDbLib${CMAKE_STATIC_LIBRARY_SUFFIX}"
+        INTERFACE_INCLUDE_DIRECTORIES "${REDBOXDB_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES "spdlog::spdlog;Threads::Threads"
+    )
+endif()
+
+check_required_components(RedBoxDb)
