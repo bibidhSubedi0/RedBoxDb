@@ -59,6 +59,21 @@
       "threads": 4,
       "num_vectors": 100000,
       "dimensions": 128
+    },
+    {
+      "commit": "9d81807",
+      "date": "2026-07-26",
+      "message": "Fix strict-aliasing violation in warm_pages() (#83) (#144)",
+      "hnsw_insert_per_sec": 1912,
+      "hnsw_qps_1t": 23225,
+      "hnsw_qps_nt": 59834,
+      "hnsw_recall_100": 0.8666,
+      "ivf_insert_per_sec": 62217,
+      "ivf_qps_1t": 4427,
+      "ivf_qps_nt": 10058,
+      "threads": 4,
+      "num_vectors": 100000,
+      "dimensions": 128
     }
   ]
 }
