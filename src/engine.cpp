@@ -511,11 +511,18 @@ namespace CoreEngine {
         volatile uint64_t sink = 0;
         size_t cap = _manager->get_header()->max_capacity;
 
-        // Touch every vector (float_block) — 4KB stride = page
+        // Touch every vector (float_block) — 4KB stride = page.
+        // Read via memcpy into a local, not a reinterpret_cast'd dereference:
+        // aliasing a float* as a uint64_t* violates strict aliasing, which
+        // lets the compiler assume the read can't observe writes through the
+        // float pointer and reorder or drop it. memcpy's byte-level copy is
+        // exempt from strict aliasing and is guaranteed to happen.
         const float* fblk = _manager->get_float_ptr(0);
         size_t dim = dimension;
         for (size_t i = 0; i < cap; ++i) {
-            sink += *reinterpret_cast<const uint64_t*>(&fblk[i * dim]);
+            uint64_t chunk;
+            std::memcpy(&chunk, &fblk[i * dim], sizeof(chunk));
+            sink += chunk;
         }
 
         // Touch every edge entry
@@ -524,7 +531,9 @@ namespace CoreEngine {
             uint8_t M = _manager->get_header()->hnsw_M;
             size_t epn = HnswManager::edges_per_node(M);
             for (size_t i = 0; i < cap; ++i) {
-                sink += *reinterpret_cast<const uint64_t*>(&eblk[i * epn]);
+                uint64_t chunk;
+                std::memcpy(&chunk, &eblk[i * epn], sizeof(chunk));
+                sink += chunk;
             }
         }
 
