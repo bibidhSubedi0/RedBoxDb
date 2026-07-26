@@ -31,8 +31,12 @@ class RedBoxClient:
         self.capacity = capacity
         self.sock: Optional[socket.socket] = None
 
-        self._connect()
-        self._handshake(db_name, dim, capacity)
+        try:
+            self._connect()
+            self._handshake(db_name, dim, capacity)
+        except Exception:
+            self.close()
+            raise
 
 
     def _connect(self):
@@ -146,8 +150,12 @@ class RedBoxClient:
         client.capacity = capacity
         client.sock = None
 
-        client._connect()
-        client._handshake_hnsw(db_name, dim, capacity, hnsw_M, hnsw_ef_construction)
+        try:
+            client._connect()
+            client._handshake_hnsw(db_name, dim, capacity, hnsw_M, hnsw_ef_construction)
+        except Exception:
+            client.close()
+            raise
         return client
 
     def _handshake_hnsw(self, name: str, dim: int, capacity: int, hnsw_M: int, hnsw_ef_construction: int):
