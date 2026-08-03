@@ -58,3 +58,33 @@ endif()
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(benchmark)
+
+# =========================
+# Install: headers + CMake package config for downstream find_package()
+# =========================
+install(
+    DIRECTORY ${PROJECT_SOURCE_DIR}/include/redboxdb
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    ${PROJECT_SOURCE_DIR}/cmake/RedBoxDbConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/RedBoxDbConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RedBoxDb
+    PATH_VARS CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_INCLUDEDIR CMAKE_INSTALL_BINDIR
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/RedBoxDbConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(
+    FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/RedBoxDbConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/RedBoxDbConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/RedBoxDb
+)
