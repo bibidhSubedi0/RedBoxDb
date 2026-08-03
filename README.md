@@ -39,6 +39,7 @@ db.close()
 2. **Protocol**: Custom binary format.
 * Request: `[CMD (1b)] [ID (4b)] [Payload]`
 * Response: `[ACK (1b)]` or `[Data]`
+* Full command-by-command reference: [docs/PROTOCOL.md](docs/PROTOCOL.md)
 3. **Storage**: Data is persisted to `.db` files in the execution directory using a robust append-only format.
 4. **Client (`/redbox-sdk`)**: Python wrapper that handles process lifecycle (subprocess spawning), binary packing (`struct.pack`), and socket communication.
 ## API Reference
