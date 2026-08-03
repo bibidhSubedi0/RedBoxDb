@@ -47,3 +47,8 @@ set_project_warnings(VerifyHnsw)
 # Register tests with CTest (Standard CMake testing tool)
 include(GoogleTest)
 gtest_discover_tests(RedBoxDbTests)
+
+# VerifyHnsw exits 0 when insert throughput, QPS, and recall are all above
+# threshold (see tests/verify_hnsw.cpp), non-zero otherwise -- CTest reads
+# that directly as pass/fail.
+add_test(NAME VerifyHnsw COMMAND VerifyHnsw)
