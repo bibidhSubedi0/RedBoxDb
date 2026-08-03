@@ -94,6 +94,21 @@ jobs:
         cd build/tests
         ./RedBoxDbTests
 
+    # 7b. Run HNSW performance/recall verification (insert throughput, QPS,
+    # recall@K -- see tests/verify_hnsw.cpp for thresholds). Exits non-zero
+    # if any threshold isn't met, so this gates CI like the GTest step above.
+    - name: Run HNSW Verification (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        cd build/tests
+        if (Test-Path VerifyHnsw.exe) { .\VerifyHnsw.exe }
+
+    - name: Run HNSW Verification (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        cd build/tests
+        ./VerifyHnsw
+
     # 8. Run Python Integration Tests
     - name: Run System Verification (Windows)
       if: runner.os == 'Windows'
