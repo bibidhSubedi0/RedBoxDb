@@ -32,8 +32,12 @@ class RedBoxClient:
         self.timeout = timeout
         self.sock: Optional[socket.socket] = None
 
-        self._connect()
-        self._handshake(db_name, dim, capacity)
+        try:
+            self._connect()
+            self._handshake(db_name, dim, capacity)
+        except Exception:
+            self.close()
+            raise
 
 
     def _connect(self):
@@ -56,14 +60,26 @@ class RedBoxClient:
         if not ack:
             raise RuntimeError("Server rejected handshake or disconnected.")
 
+    def _recv_ack(self) -> bytes:
+        """Read the single-byte ack the server sends after most commands.
+
+        Raises ConnectionError if the server closed the connection instead
+        of acking, rather than silently treating an empty read as a
+        negative (or worse, ambiguous) response.
+        """
+        ack = self.sock.recv(1)
+        if not ack:
+            raise ConnectionError("Server disconnected before sending an acknowledgment")
+        return ack
+
     def _recv_exact(self, n: int) -> bytes:
-        buf = b''
+        buf = bytearray()
         while len(buf) < n:
             chunk = self.sock.recv(n - len(buf))
             if not chunk:
                 raise ConnectionError("Server disconnected mid-response")
-            buf += chunk
-        return buf
+            buf.extend(chunk)
+        return bytes(buf)
 
     def _validate_vector(self, vector: Union[np.ndarray, List[float]]) -> bytes:
         if isinstance(vector, list):
@@ -79,7 +95,7 @@ class RedBoxClient:
         data   = self._validate_vector(vector)
         header = struct.pack('<BI', self.CMD_INSERT, vec_id)
         self.sock.sendall(header + data)
-        self.sock.recv(1)  # ack
+        self._recv_ack()
 
     def insert_auto(self, vector: Union[np.ndarray, List[float]]) -> int:
         """Insert a vector with a server-assigned auto-incrementing ID. Returns the ID."""
@@ -111,30 +127,30 @@ class RedBoxClient:
         """Soft-delete a vector by ID. Returns True if found and deleted."""
         header = struct.pack('<BI', self.CMD_DELETE, vec_id)
         self.sock.sendall(header)
-        return self.sock.recv(1) == b'1'
+        return self._recv_ack() == b'1'
 
     def update(self, vec_id: int, vector: Union[np.ndarray, List[float]]) -> bool:
         """Overwrite an existing vector in-place. Returns False if ID not found/deleted."""
         data   = self._validate_vector(vector)
         header = struct.pack('<BI', self.CMD_UPDATE, vec_id)
         self.sock.sendall(header + data)
-        return self.sock.recv(1) == b'1'
+        return self._recv_ack() == b'1'
 
     def drop(self) -> bool:
         self.sock.sendall(struct.pack('<BI', self.CMD_DROP_DB, 0))
-        return self.sock.recv(1) == b'1'
+        return self._recv_ack() == b'1'
 
     def set_probes(self, probes: int) -> bool:
         """Set the number of IVF clusters to probe during search (1-255)."""
         header = struct.pack('<BI', self.CMD_SET_PROBES, probes)
         self.sock.sendall(header)
-        return self.sock.recv(1) == b'1'
+        return self._recv_ack() == b'1'
 
     def set_hnsw_ef(self, ef: int) -> bool:
         """Set the HNSW ef_search parameter."""
         header = struct.pack('<BI', self.CMD_SET_HNSW_EF, ef)
         self.sock.sendall(header)
-        return self.sock.recv(1) == b'1'
+        return self._recv_ack() == b'1'
 
     @classmethod
     def create_hnsw(cls, host: str = '127.0.0.1', port: int = 8080,
@@ -152,8 +168,12 @@ class RedBoxClient:
         client.timeout = timeout
         client.sock = None
 
-        client._connect()
-        client._handshake_hnsw(db_name, dim, capacity, hnsw_M, hnsw_ef_construction)
+        try:
+            client._connect()
+            client._handshake_hnsw(db_name, dim, capacity, hnsw_M, hnsw_ef_construction)
+        except Exception:
+            client.close()
+            raise
         return client
 
     def _handshake_hnsw(self, name: str, dim: int, capacity: int, hnsw_M: int, hnsw_ef_construction: int):
